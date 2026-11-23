@@ -178,8 +178,8 @@ exports.login = async (req, res) => {
 
     const token = generateToken(user);
 
-    // If password matches the username/USN or is_first_login flag is true, trigger first time flow
-    const requiresFirstTimeFlow = Boolean(user.is_first_login || password === user.username);
+    // Only trigger first time flow if the account has NOT changed password yet (is_first_login is TRUE)
+    const requiresFirstTimeFlow = Boolean(user.is_first_login);
 
     res.json({
       message: 'Login successful.',
