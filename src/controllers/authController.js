@@ -145,17 +145,18 @@ exports.registerStudent = async (req, res) => {
   }
 };
 
-// 2. User login (Student USN / Staff Username)
+// 2. User login (Student USN / Faculty ID / HOD ID)
 exports.login = async (req, res) => {
   try {
     const { username, password } = req.body;
     const cleanUsername = username?.trim()?.toUpperCase();
 
     if (!cleanUsername || !password) {
-      return res.status(400).json({ message: 'Identifier (USN / Username) and Password are required.' });
+      return res.status(400).json({ message: 'Identifier and Password are required.' });
     }
 
-    const [rows] = await db.query(
+    // A. Check student users table first
+    const [userRows] = await db.query(
       `SELECT u.id, u.username, u.email, u.password_hash, u.role, u.is_first_login,
               sp.full_name, sp.branch, sp.section
        FROM users u
@@ -165,37 +166,86 @@ exports.login = async (req, res) => {
       [cleanUsername]
     );
 
-    if (rows.length === 0) {
-      return res.status(401).json({ message: 'Invalid credentials. User not found.' });
-    }
+    if (userRows.length > 0) {
+      const user = userRows[0];
+      const isPasswordValid = await bcrypt.compare(password, user.password_hash);
 
-    const user = rows[0];
-    const isPasswordValid = await bcrypt.compare(password, user.password_hash);
-
-    if (!isPasswordValid) {
-      return res.status(401).json({ message: 'Invalid credentials. Incorrect password.' });
-    }
-
-    const token = generateToken(user);
-
-    // Only trigger first time flow if the account has NOT changed password yet (is_first_login is TRUE)
-    const requiresFirstTimeFlow = Boolean(user.is_first_login);
-
-    res.json({
-      message: 'Login successful.',
-      token,
-      requiresFirstTimeFlow,
-      user: {
-        id: user.id,
-        username: user.username,
-        email: user.email,
-        role: user.role,
-        isFirstLogin: requiresFirstTimeFlow,
-        name: user.full_name || user.username,
-        branch: user.branch || '',
-        section: user.section || ''
+      if (!isPasswordValid) {
+        return res.status(401).json({ message: 'Invalid credentials. Incorrect password.' });
       }
-    });
+
+      const token = generateToken(user);
+      const requiresFirstTimeFlow = Boolean(user.is_first_login);
+
+      return res.json({
+        message: 'Login successful.',
+        token,
+        requiresFirstTimeFlow,
+        user: {
+          id: user.id,
+          username: user.username,
+          email: user.email,
+          role: user.role, // 'student'
+          isFirstLogin: requiresFirstTimeFlow,
+          name: user.full_name || user.username,
+          branch: user.branch || '',
+          section: user.section || ''
+        }
+      });
+    }
+
+    // B. Check faculty / HOD table
+    const [facultyRows] = await db.query(
+      `SELECT f.faculty_id, f.name, f.dept_code, f.designation, f.email, f.password_hash,
+              f.is_hod, f.is_first_login, d.dept_name
+       FROM faculty f
+       JOIN departments d ON f.dept_code = d.dept_code
+       WHERE UPPER(f.faculty_id) = ?
+       LIMIT 1`,
+      [cleanUsername]
+    );
+
+    if (facultyRows.length > 0) {
+      const faculty = facultyRows[0];
+      const isPasswordValid = await bcrypt.compare(password, faculty.password_hash);
+
+      if (!isPasswordValid) {
+        return res.status(401).json({ message: 'Invalid credentials. Incorrect password.' });
+      }
+
+      const role = faculty.is_hod ? 'hod' : 'faculty';
+      const userPayload = {
+        id: faculty.faculty_id,
+        username: faculty.faculty_id,
+        email: faculty.email,
+        role: role
+      };
+
+      const token = generateToken(userPayload);
+      const requiresFirstTimeFlow = Boolean(faculty.is_first_login);
+
+      return res.json({
+        message: 'Login successful.',
+        token,
+        requiresFirstTimeFlow,
+        user: {
+          id: faculty.faculty_id,
+          username: faculty.faculty_id,
+          email: faculty.email,
+          role: role, // 'hod' or 'faculty'
+          subRole: faculty.is_hod ? 'HOD' : 'Subject Teacher',
+          category: faculty.is_hod ? 'department' : 'faculty',
+          isHod: faculty.is_hod,
+          isFirstLogin: requiresFirstTimeFlow,
+          name: faculty.name,
+          designation: faculty.designation,
+          deptCode: faculty.dept_code,
+          deptName: faculty.dept_name
+        }
+      });
+    }
+
+    return res.status(401).json({ message: 'Invalid credentials. User not found.' });
   } catch (error) {
     console.error('Login error:', error);
     res.status(500).json({ message: 'Server error during login.', error: error.message });
@@ -215,16 +265,27 @@ exports.updatePassword = async (req, res) => {
     const salt = await bcrypt.genSalt(10);
     const passwordHash = await bcrypt.hash(newPassword, salt);
 
-    const [result] = await db.query(
+    // Try updating student user first
+    const [userResult] = await db.query(
       'UPDATE users SET password_hash = ?, is_first_login = FALSE WHERE UPPER(username) = ?',
       [passwordHash, cleanUsername]
     );
 
-    if (result.affectedRows === 0) {
-      return res.status(404).json({ message: 'User not found.' });
+    if (userResult.affectedRows > 0) {
+      return res.json({ message: 'Password updated successfully.' });
     }
 
-    res.json({ message: 'Password updated successfully.' });
+    // Try updating faculty user
+    const [facultyResult] = await db.query(
+      'UPDATE faculty SET password_hash = ?, is_first_login = FALSE WHERE UPPER(faculty_id) = ?',
+      [passwordHash, cleanUsername]
+    );
+
+    if (facultyResult.affectedRows > 0) {
+      return res.json({ message: 'Password updated successfully.' });
+    }
+
+    return res.status(404).json({ message: 'User not found.' });
   } catch (error) {
     console.error('Update password error:', error);
     res.status(500).json({ message: 'Failed to update password.', error: error.message });
