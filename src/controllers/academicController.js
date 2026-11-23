@@ -270,3 +270,114 @@ exports.getStudentGrades = async (req, res) => {
     res.status(500).json({ message: 'Failed to fetch student grades', error: err.message });
   }
 };
+
+// 8. Get Extracurricular Activities for a student + eligible semester range (Option B)
+exports.getStudentActivities = async (req, res) => {
+  try {
+    const usn = req.params.usn?.trim()?.toUpperCase();
+    if (!usn) {
+      return res.status(400).json({ message: 'USN is required.' });
+    }
+
+    // 1. Determine highest enrolled semester (Option B: max semester from enrollments or default to 1)
+    const [[maxSemRow]] = await db.query(
+      'SELECT COALESCE(MAX(semester), 1) AS maxSemester FROM student_course_enrollments WHERE UPPER(usn) = ?',
+      [usn]
+    );
+
+    const maxSem = maxSemRow?.maxSemester || 1;
+    // Eligible semesters from 1 to maxSem
+    const eligibleSemesters = [];
+    for (let s = 1; s <= maxSem; s++) {
+      eligibleSemesters.push(s);
+    }
+
+    // 2. Fetch existing activities for this student
+    const [activities] = await db.query(
+      'SELECT * FROM student_extracurricular_activities WHERE UPPER(usn) = ? ORDER BY semester DESC, created_at DESC',
+      [usn]
+    );
+
+    res.json({
+      usn,
+      maxSemester: maxSem,
+      eligibleSemesters,
+      activities
+    });
+  } catch (err) {
+    console.error('Error fetching extracurricular activities:', err);
+    res.status(500).json({ message: 'Failed to fetch extracurricular activities', error: err.message });
+  }
+};
+
+// 9. Upload / Add a new Extracurricular Activity
+exports.addStudentActivity = async (req, res) => {
+  try {
+    const usn = req.params.usn?.trim()?.toUpperCase();
+    const {
+      semester,
+      category,
+      otherCategoryTitle,
+      title,
+      organizer,
+      eventDate,
+      certificateUrl
+    } = req.body;
+
+    if (!usn) {
+      return res.status(400).json({ message: 'USN is required.' });
+    }
+    if (!semester || !category || !title || !certificateUrl) {
+      return res.status(400).json({
+        message: 'Semester, category, activity title, and certificate image are mandatory.'
+      });
+    }
+
+    if (category === 'Others' && !otherCategoryTitle?.trim()) {
+      return res.status(400).json({
+        message: 'Please specify the custom category name for "Others".'
+      });
+    }
+
+    // Verify semester is within eligible range (Option B)
+    const [[maxSemRow]] = await db.query(
+      'SELECT COALESCE(MAX(semester), 1) AS maxSemester FROM student_course_enrollments WHERE UPPER(usn) = ?',
+      [usn]
+    );
+    const maxAllowed = maxSemRow?.maxSemester || 1;
+    if (parseInt(semester, 10) > maxAllowed) {
+      return res.status(400).json({
+        message: `Invalid semester: You can only upload achievements up to your current enrolled semester (${maxAllowed}).`
+      });
+    }
+
+    const [insertResult] = await db.query(`
+      INSERT INTO student_extracurricular_activities (
+        usn, semester, category, other_category_title,
+        title, organizer, event_date, certificate_url, status
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'Pending')
+    `, [
+      usn,
+      parseInt(semester, 10),
+      category,
+      category === 'Others' ? otherCategoryTitle.trim() : null,
+      title.trim(),
+      organizer ? organizer.trim() : null,
+      eventDate || null,
+      certificateUrl
+    ]);
+
+    const [[newRecord]] = await db.query(
+      'SELECT * FROM student_extracurricular_activities WHERE id = ?',
+      [insertResult.insertId]
+    );
+
+    res.status(201).json({
+      message: 'Extracurricular achievement submitted successfully!',
+      activity: newRecord
+    });
+  } catch (err) {
+    console.error('Error adding extracurricular activity:', err);
+    res.status(500).json({ message: 'Failed to record extracurricular activity', error: err.message });
+  }
+};
