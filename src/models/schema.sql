@@ -40,7 +40,6 @@ CREATE TABLE IF NOT EXISTS student_profiles (
   category VARCHAR(50),
   aadhaar_number VARCHAR(20),
   place_of_stay VARCHAR(50),
-  medium_of_instruction VARCHAR(50) DEFAULT 'English',
   student_ssid VARCHAR(50),
   sslc_percentage DECIMAL(5,2),
   studied_kannada_in_sslc VARCHAR(10) DEFAULT 'Yes',

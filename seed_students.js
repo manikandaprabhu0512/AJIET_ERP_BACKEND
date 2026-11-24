@@ -149,7 +149,7 @@ async function seedStudents() {
           full_name = ?, email = ?, mobile = ?, branch = ?, section = ?, enrolled_year = ?,
           program_type = 'UG', admission_quota = 'CET', dob = ?, gender = ?, blood_group = ?,
           religion = 'Hindu', caste = 'General', category = 'General Merit (GM)',
-          place_of_stay = 'Hostel', medium_of_instruction = 'English',
+          place_of_stay = 'Hostel',
           state = 'Karnataka', district = 'Dakshina Kannada', city = 'Mangaluru', pincode = '575006',
           father_name = ?, mother_name = ?
          WHERE usn = ?`,
@@ -165,13 +165,13 @@ async function seedStudents() {
           user_id, usn, full_name, email, mobile_country_code, mobile,
           branch, section, enrolled_year, program_type, admission_quota,
           dob, gender, blood_group, religion, caste, category,
-          place_of_stay, medium_of_instruction, state, district, city, pincode,
+          place_of_stay, state, district, city, pincode,
           father_name, mother_name, declaration_accepted
         ) VALUES (
           ?, ?, ?, ?, '+91', ?,
           'B.E. in Electronics & Communication Engineering', 'Section A', '2025', 'UG', 'CET',
           ?, ?, ?, 'Hindu', 'General', 'General Merit (GM)',
-          'Hostel', 'English', 'Karnataka', 'Dakshina Kannada', 'Mangaluru', '575006',
+          'Hostel', 'Karnataka', 'Dakshina Kannada', 'Mangaluru', '575006',
           ?, ?, true
         )`,
         [
