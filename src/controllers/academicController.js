@@ -294,7 +294,11 @@ exports.getStudentActivities = async (req, res) => {
 
     // 2. Fetch existing activities for this student
     const [activities] = await db.query(
-      'SELECT * FROM student_extracurricular_activities WHERE UPPER(usn) = ? ORDER BY semester DESC, created_at DESC',
+      `SELECT id, usn, semester, category, other_category_title, title,
+              organizer, event_date, certificate_url, created_at
+       FROM student_extracurricular_activities
+       WHERE UPPER(usn) = ?
+       ORDER BY semester DESC, created_at DESC`,
       [usn]
     );
 
@@ -354,8 +358,8 @@ exports.addStudentActivity = async (req, res) => {
     const [insertResult] = await db.query(`
       INSERT INTO student_extracurricular_activities (
         usn, semester, category, other_category_title,
-        title, organizer, event_date, certificate_url, status
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'Pending')
+        title, organizer, event_date, certificate_url
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
     `, [
       usn,
       parseInt(semester, 10),
@@ -368,7 +372,10 @@ exports.addStudentActivity = async (req, res) => {
     ]);
 
     const [[newRecord]] = await db.query(
-      'SELECT * FROM student_extracurricular_activities WHERE id = ?',
+      `SELECT id, usn, semester, category, other_category_title, title,
+              organizer, event_date, certificate_url, created_at
+       FROM student_extracurricular_activities
+       WHERE id = ?`,
       [insertResult.insertId]
     );
 
