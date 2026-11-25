@@ -70,3 +70,19 @@ CREATE TABLE IF NOT EXISTS student_profiles (
   INDEX idx_student_profiles_usn (usn),
   UNIQUE KEY unique_student_abc_id (abc_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- 3. Faculty Registration Profiles
+-- Authentication credentials remain in users; the JSON column keeps all
+-- faculty registration form fields without dropping fields as the form evolves.
+CREATE TABLE IF NOT EXISTS faculty_profiles (
+  user_id INT PRIMARY KEY,
+  faculty_id VARCHAR(50) NOT NULL UNIQUE,
+  title VARCHAR(20) NOT NULL DEFAULT '',
+  full_name VARCHAR(150) NOT NULL,
+  department VARCHAR(150) NOT NULL,
+  designation VARCHAR(100) NOT NULL,
+  registration_data JSON NOT NULL,
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;

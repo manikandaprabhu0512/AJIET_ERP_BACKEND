@@ -179,9 +179,12 @@ exports.login = async (req, res) => {
     // A. Check student users table first
     const [userRows] = await db.query(
       `SELECT u.id, u.username, u.email, u.password_hash, u.role, u.is_first_login,
-              sp.full_name, sp.branch, sp.section
+              sp.full_name AS student_full_name, sp.branch, sp.section,
+              fp.title AS faculty_title, fp.full_name AS faculty_full_name,
+              fp.department AS faculty_department, fp.designation AS faculty_designation
        FROM users u
        LEFT JOIN student_profiles sp ON u.id = sp.user_id
+       LEFT JOIN faculty_profiles fp ON u.id = fp.user_id
        WHERE UPPER(u.username) = ?
        LIMIT 1`,
       [cleanUsername]
@@ -206,9 +209,15 @@ exports.login = async (req, res) => {
           id: user.id,
           username: user.username,
           email: user.email,
-          role: user.role, // 'student'
+          role: user.role,
+          category: user.role === 'faculty' ? 'faculty' : user.role,
           isFirstLogin: requiresFirstTimeFlow,
-          name: user.full_name || user.username,
+          name: user.role === 'faculty'
+            ? `${user.faculty_title || ''} ${user.faculty_full_name || user.username}`.trim()
+            : user.student_full_name || user.username,
+          department: user.faculty_department || '',
+          deptName: user.faculty_department || '',
+          designation: user.faculty_designation || '',
           branch: user.branch || '',
           section: user.section || ''
         }
