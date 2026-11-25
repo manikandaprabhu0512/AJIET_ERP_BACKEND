@@ -21,7 +21,6 @@ async function setupExtracurricular() {
       organizer VARCHAR(200) DEFAULT NULL,
       event_date DATE DEFAULT NULL,
       certificate_url LONGTEXT NOT NULL,
-      status ENUM('Pending', 'Verified', 'Rejected') DEFAULT 'Pending',
       created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
       CONSTRAINT fk_sea_usn FOREIGN KEY (usn) REFERENCES student_profiles(usn) ON DELETE CASCADE,
       INDEX idx_sea_usn_sem (usn, semester)
