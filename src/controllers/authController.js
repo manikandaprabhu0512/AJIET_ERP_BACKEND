@@ -18,10 +18,14 @@ exports.registerStudent = async (req, res) => {
     const data = req.body;
     const usn = data.usn?.trim()?.toUpperCase();
     const email = data.email?.trim()?.toLowerCase();
+    const abcId = typeof data.abcId === 'string' ? data.abcId.trim() : '';
     const rawPassword = data.password || usn; // Defaults to USN as initial password
 
     if (!usn || !email || !data.fullName) {
       return res.status(400).json({ message: 'USN, Email, and Student Name are required.' });
+    }
+    if (abcId && !/^\d{12}$/.test(abcId)) {
+      return res.status(400).json({ message: 'ABC ID must be exactly 12 digits when provided.' });
     }
 
     // Check if USN or Email already registered
@@ -32,6 +36,16 @@ exports.registerStudent = async (req, res) => {
 
     if (existingUsers.length > 0) {
       return res.status(409).json({ message: 'A student with this USN or Email is already registered.' });
+    }
+
+    if (abcId) {
+      const [existingAbcId] = await db.query(
+        'SELECT user_id FROM student_profiles WHERE abc_id = ? LIMIT 1',
+        [abcId]
+      );
+      if (existingAbcId.length > 0) {
+        return res.status(409).json({ message: 'This ABC ID is already registered.' });
+      }
     }
 
     connection = await db.getConnection();
@@ -56,7 +70,7 @@ exports.registerStudent = async (req, res) => {
         user_id, usn, full_name, email, mobile_country_code, mobile, branch, section,
         enrolled_year, program_type, admission_quota, dob, gender, blood_group, religion,
         caste, category, aadhaar_number, place_of_stay, student_ssid,
-        sslc_percentage, studied_kannada_in_sslc, puc_pcm_percentage, puc_total_percentage,
+        sslc_percentage, studied_kannada_in_sslc, puc_pcm_percentage, puc_total_percentage, abc_id,
         address_line1, city, district, state, pincode, pg_owner_name, pg_contact_country_code,
         pg_contact_number, pg_address, father_name, father_occupation, father_mobile_country_code,
         father_mobile, mother_name, mother_occupation, mother_mobile_country_code, mother_mobile,
@@ -64,6 +78,7 @@ exports.registerStudent = async (req, res) => {
       ) VALUES (
         ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
         ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+        ?,
         ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
       )`,
       [
@@ -91,6 +106,7 @@ exports.registerStudent = async (req, res) => {
         data.studiedKannadaInSSLC || 'Yes',
         parseFloat(data.pucPcmPercentage) || null,
         parseFloat(data.pucTotalPercentage) || null,
+        abcId || null,
         data.addressLine1 || '',
         data.city || '',
         data.district || '',
@@ -138,6 +154,12 @@ exports.registerStudent = async (req, res) => {
   } catch (error) {
     if (connection) await connection.rollback();
     console.error('Registration error:', error);
+    if (
+      error.code === 'ER_DUP_ENTRY' &&
+      error.message.includes('unique_student_abc_id')
+    ) {
+      return res.status(409).json({ message: 'This ABC ID is already registered.' });
+    }
     res.status(500).json({ message: 'Internal server error during registration.', error: error.message });
   } finally {
     if (connection) connection.release();

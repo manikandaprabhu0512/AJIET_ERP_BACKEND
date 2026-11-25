@@ -45,6 +45,7 @@ CREATE TABLE IF NOT EXISTS student_profiles (
   studied_kannada_in_sslc VARCHAR(10) DEFAULT 'Yes',
   puc_pcm_percentage DECIMAL(5,2),
   puc_total_percentage DECIMAL(5,2),
+  abc_id VARCHAR(12) DEFAULT NULL,
   address_line1 TEXT,
   city VARCHAR(100),
   district VARCHAR(100),
@@ -66,5 +67,6 @@ CREATE TABLE IF NOT EXISTS student_profiles (
   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
   updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
-  INDEX idx_student_profiles_usn (usn)
+  INDEX idx_student_profiles_usn (usn),
+  UNIQUE KEY unique_student_abc_id (abc_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
