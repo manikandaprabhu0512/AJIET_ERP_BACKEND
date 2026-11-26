@@ -1,5 +1,33 @@
 const db = require('../config/db');
 
+const ensureFacultyMessagesTable = async () => {
+  await db.query(`
+    CREATE TABLE IF NOT EXISTS faculty_messages (
+      id INT AUTO_INCREMENT PRIMARY KEY,
+      faculty_id VARCHAR(50) NOT NULL,
+      faculty_name VARCHAR(150) DEFAULT '',
+      department VARCHAR(150) DEFAULT '',
+      subject VARCHAR(200) DEFAULT '',
+      body TEXT NOT NULL,
+      recipient_usn VARCHAR(20) DEFAULT NULL,
+      recipient_mode VARCHAR(20) NOT NULL DEFAULT 'all',
+      is_read BOOLEAN DEFAULT FALSE,
+      sent_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      INDEX idx_faculty_messages_faculty (faculty_id),
+      INDEX idx_faculty_messages_recipient (recipient_usn),
+      INDEX idx_faculty_messages_sent (sent_at)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+  `);
+  await db.query(`
+    CREATE TABLE IF NOT EXISTS faculty_message_reads (
+      message_id INT NOT NULL,
+      usn VARCHAR(20) NOT NULL,
+      read_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      PRIMARY KEY (message_id, usn)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+  `);
+};
+
 // 1. Get Department Overview (Counts & Stats)
 exports.getDepartmentOverview = async (req, res) => {
   try {
@@ -167,43 +195,100 @@ exports.saveAllocations = async (req, res) => {
   }
 };
 
-// 6. Get Subjects Assigned to a Specific Faculty
+// 6. Get Curriculum Subjects Assigned to a Specific Faculty
 exports.getFacultyAssignedSubjects = async (req, res) => {
   try {
-    const facultyId = (req.query.faculty_id || req.params.faculty_id || '').toUpperCase();
+    const facultyId = (req.query.faculty_id || req.params.faculty_id || '')
+      .trim()
+      .toUpperCase();
 
     if (!facultyId) {
       return res.status(400).json({ message: 'Faculty ID is required.' });
     }
 
-    const [facultyInfo] = await db.query(
-      'SELECT faculty_id, name, dept_code, designation, email, is_hod FROM faculty WHERE faculty_id = ?',
-      [facultyId]
-    );
-
-    if (facultyInfo.length === 0) {
-      return res.status(404).json({ message: 'Faculty not found.' });
-    }
-
     const [assignedRows] = await db.query(
-      `SELECT sa.id as allocation_id, sa.semester, sa.section, sa.academic_year, sa.allocated_at,
-              s.subject_code, s.subject_name, s.credits, s.subject_type,
+      `SELECT csa.id AS allocation_id, cs.semester, csa.section,
+              csa.academic_year, csa.allocated_at, csa.dept_code,
+              cs.scheme_year, cs.subject_code, cs.subject_name,
+              cs.credits, cs.subject_category, cs.teaching_hours,
               d.dept_name
-       FROM subject_allocations sa
-       JOIN subjects s ON sa.subject_code = s.subject_code
-       JOIN departments d ON sa.dept_code = d.dept_code
-       WHERE sa.faculty_id = ?
-       ORDER BY sa.semester ASC, sa.section ASC, s.subject_code ASC`,
+       FROM curriculum_subject_allotments csa
+       JOIN curriculum_subjects cs
+         ON cs.id = csa.curriculum_subject_id
+        AND cs.dept_code = csa.dept_code
+       LEFT JOIN departments d ON d.dept_code = csa.dept_code
+       WHERE UPPER(csa.faculty_id) = ?
+       ORDER BY csa.academic_year DESC, cs.semester ASC,
+                csa.section ASC, cs.subject_code ASC`,
       [facultyId]
     );
 
     res.json({
-      faculty: facultyInfo[0],
       assignedSubjects: assignedRows
     });
   } catch (err) {
     console.error('Error fetching faculty subjects:', err);
     res.status(500).json({ message: 'Failed to fetch assigned subjects', error: err.message });
+  }
+};
+
+// 7. Fetch the enrolled students for one faculty subject allocation
+exports.getFacultySubjectRoster = async (req, res) => {
+  try {
+    const facultyId = (req.query.faculty_id || '').trim().toUpperCase();
+    const subjectCode = (req.query.subject_code || '').trim().toUpperCase();
+    const semester = Number.parseInt(req.query.semester, 10);
+    const section = (req.query.section || '').trim();
+    const academicYear = (req.query.academic_year || '').trim();
+
+    if (!facultyId || !subjectCode || !Number.isInteger(semester) || !section || !academicYear) {
+      return res.status(400).json({
+        message: 'Faculty, subject, semester, section, and academic year are required.'
+      });
+    }
+
+    const [allocationRows] = await db.query(
+      `SELECT csa.id
+       FROM curriculum_subject_allotments csa
+       JOIN curriculum_subjects cs
+         ON cs.id = csa.curriculum_subject_id
+        AND cs.dept_code = csa.dept_code
+       WHERE UPPER(csa.faculty_id) = ? AND UPPER(cs.subject_code) = ?
+         AND cs.semester = ? AND csa.section = ? AND csa.academic_year = ?
+       LIMIT 1`,
+      [facultyId, subjectCode, semester, section, academicYear]
+    );
+    if (allocationRows.length === 0) {
+      return res.status(404).json({ message: 'This subject is not assigned to the faculty.' });
+    }
+
+    const [students] = await db.query(
+      `SELECT DISTINCT UPPER(sp.usn) AS usn, sp.full_name AS student_name
+       FROM student_course_enrollments sce
+       JOIN student_profiles sp ON UPPER(sp.usn) = UPPER(sce.usn)
+       WHERE UPPER(sce.subject_code) = ? AND sce.semester = ?
+         AND sce.academic_year = ? AND sp.section = ?
+       ORDER BY usn ASC`,
+      [subjectCode, semester, academicYear, section]
+    );
+
+    res.json({
+      facultyId,
+      subjectCode,
+      semester,
+      section,
+      academicYear,
+      students: students.map((student) => ({
+        studentId: student.usn,
+        studentName: student.student_name
+      }))
+    });
+  } catch (err) {
+    console.error('Error fetching faculty subject roster:', err);
+    res.status(500).json({
+      message: 'Failed to fetch enrolled students for this subject.',
+      error: err.message
+    });
   }
 };
 
@@ -386,5 +471,174 @@ exports.addStudentActivity = async (req, res) => {
   } catch (err) {
     console.error('Error adding extracurricular activity:', err);
     res.status(500).json({ message: 'Failed to record extracurricular activity', error: err.message });
+  }
+};
+
+// 10. Faculty sends a message to all students or selected USNs
+exports.sendFacultyMessage = async (req, res) => {
+  let connection;
+  try {
+    await ensureFacultyMessagesTable();
+    const facultyId = (req.body.facultyId || req.body.faculty_id || '').trim();
+    const facultyName = (req.body.facultyName || req.body.faculty_name || '').trim();
+    const department = (req.body.department || '').trim();
+    const subject = (req.body.subject || '').trim();
+    const body = (req.body.body || '').trim();
+    const recipientMode = req.body.recipientMode === 'selected' ? 'selected' : 'all';
+    const recipients = Array.isArray(req.body.recipients)
+      ? [...new Set(req.body.recipients.map((usn) => String(usn).trim().toUpperCase()).filter(Boolean))]
+      : [];
+
+    if (!facultyId || !body) {
+      return res.status(400).json({ message: 'Faculty ID and message body are required.' });
+    }
+    if (recipientMode === 'selected' && recipients.length === 0) {
+      return res.status(400).json({ message: 'Select at least one student USN.' });
+    }
+
+    connection = await db.getConnection();
+    await connection.beginTransaction();
+    const insertedIds = [];
+
+    if (recipientMode === 'all') {
+      const [result] = await connection.query(
+        `INSERT INTO faculty_messages
+         (faculty_id, faculty_name, department, subject, body, recipient_usn, recipient_mode)
+         VALUES (?, ?, ?, ?, ?, NULL, 'all')`,
+        [facultyId, facultyName, department, subject, body]
+      );
+      insertedIds.push(result.insertId);
+    } else {
+      for (const usn of recipients) {
+        const [result] = await connection.query(
+          `INSERT INTO faculty_messages
+           (faculty_id, faculty_name, department, subject, body, recipient_usn, recipient_mode)
+           VALUES (?, ?, ?, ?, ?, ?, 'selected')`,
+          [facultyId, facultyName, department, subject, body, usn]
+        );
+        insertedIds.push(result.insertId);
+      }
+    }
+
+    await connection.commit();
+    res.status(201).json({
+      message: 'Message sent successfully.',
+      recipientMode,
+      recipients,
+      messageIds: insertedIds
+    });
+  } catch (err) {
+    if (connection) await connection.rollback();
+    console.error('Error sending faculty message:', err);
+    res.status(500).json({ message: 'Failed to send faculty message.', error: err.message });
+  } finally {
+    if (connection) connection.release();
+  }
+};
+
+// 11. Faculty sent-message history
+exports.getFacultyMessages = async (req, res) => {
+  try {
+    await ensureFacultyMessagesTable();
+    const facultyId = req.params.faculty_id?.trim();
+    if (!facultyId) {
+      return res.status(400).json({ message: 'Faculty ID is required.' });
+    }
+
+    const [rows] = await db.query(
+      `SELECT id, faculty_id, faculty_name, department, subject, body,
+              recipient_usn, recipient_mode, is_read, sent_at
+       FROM faculty_messages
+       WHERE faculty_id = ?
+       ORDER BY sent_at DESC, id DESC
+       LIMIT 100`,
+      [facultyId]
+    );
+
+    const grouped = new Map();
+    rows.forEach((row) => {
+      const key =
+        row.recipient_mode === 'all'
+          ? `${row.sent_at}-${row.subject}-${row.body}`
+          : `${row.sent_at}-${row.subject}-${row.body}-${row.recipient_mode}`;
+      if (!grouped.has(key)) {
+        grouped.set(key, {
+          id: row.id,
+          subject: row.subject,
+          body: row.body,
+          recipientMode: row.recipient_mode,
+          recipients: [],
+          sentAt: row.sent_at
+        });
+      }
+      if (row.recipient_usn) {
+        grouped.get(key).recipients.push(row.recipient_usn);
+      }
+    });
+
+    res.json({ messages: [...grouped.values()] });
+  } catch (err) {
+    console.error('Error fetching faculty messages:', err);
+    res.status(500).json({ message: 'Failed to fetch sent messages.', error: err.message });
+  }
+};
+
+// 12. Student notification inbox
+exports.getStudentMessages = async (req, res) => {
+  try {
+    await ensureFacultyMessagesTable();
+    const usn = req.params.usn?.trim()?.toUpperCase();
+    if (!usn) {
+      return res.status(400).json({ message: 'USN is required.' });
+    }
+
+    const [rows] = await db.query(
+      `SELECT fm.id, fm.faculty_id, fm.faculty_name, fm.department, fm.subject, fm.body,
+              fm.recipient_usn, fm.recipient_mode, fm.sent_at,
+              EXISTS (
+                SELECT 1 FROM faculty_message_reads fmr
+                WHERE fmr.message_id = fm.id AND fmr.usn = ?
+              ) AS is_read
+       FROM faculty_messages fm
+       WHERE fm.recipient_mode = 'all'
+          OR fm.recipient_usn = ?
+       ORDER BY fm.sent_at DESC, fm.id DESC
+       LIMIT 100`,
+      [usn, usn]
+    );
+    res.json({ usn, messages: rows });
+  } catch (err) {
+    console.error('Error fetching student messages:', err);
+    res.status(500).json({ message: 'Failed to fetch student notifications.', error: err.message });
+  }
+};
+
+exports.markStudentMessageRead = async (req, res) => {
+  try {
+    await ensureFacultyMessagesTable();
+    const usn = req.params.usn?.trim()?.toUpperCase();
+    const messageId = parseInt(req.params.message_id, 10);
+    if (!usn || !messageId) {
+      return res.status(400).json({ message: 'USN and message ID are required.' });
+    }
+
+    const [eligible] = await db.query(
+      `SELECT id FROM faculty_messages
+       WHERE id = ? AND (recipient_mode = 'all' OR recipient_usn = ?)`,
+      [messageId, usn]
+    );
+    if (eligible.length === 0) {
+      return res.status(404).json({ message: 'Notification not found.' });
+    }
+    await db.query(
+      `INSERT INTO faculty_message_reads (message_id, usn)
+       VALUES (?, ?)
+       ON DUPLICATE KEY UPDATE read_at = CURRENT_TIMESTAMP`,
+      [messageId, usn]
+    );
+    res.json({ message: 'Notification marked as read.' });
+  } catch (err) {
+    console.error('Error marking notification read:', err);
+    res.status(500).json({ message: 'Failed to update notification.', error: err.message });
   }
 };
