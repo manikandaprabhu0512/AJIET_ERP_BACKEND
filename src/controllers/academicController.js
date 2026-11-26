@@ -124,12 +124,10 @@ exports.getDepartmentOverview = async (req, res) => {
     });
   } catch (err) {
     console.error("Error fetching department overview:", err);
-    res
-      .status(500)
-      .json({
-        message: "Failed to fetch department stats",
-        error: err.message,
-      });
+    res.status(500).json({
+      message: "Failed to fetch department stats",
+      error: err.message,
+    });
   }
 };
 
@@ -184,6 +182,186 @@ exports.getSubjects = async (req, res) => {
     res
       .status(500)
       .json({ message: "Failed to fetch subjects", error: err.message });
+  }
+};
+
+exports.getCurriculumSchemes = async (req, res) => {
+  try {
+    const deptCode = String(req.query.dept || "")
+      .trim()
+      .toUpperCase();
+    if (!deptCode) {
+      return res.status(400).json({ message: "Department code is required." });
+    }
+
+    const [rows] = await db.query(
+      "SELECT scheme_year FROM curriculum_schemes WHERE dept_code = ? ORDER BY scheme_year DESC",
+      [deptCode],
+    );
+    res.json({ schemes: rows.map((row) => row.scheme_year) });
+  } catch (err) {
+    console.error("Error fetching curriculum schemes:", err);
+    res.status(500).json({
+      message: "Failed to fetch curriculum schemes",
+      error: err.message,
+    });
+  }
+};
+
+exports.getCurriculumSubjects = async (req, res) => {
+  try {
+    const deptCode = String(req.query.dept || "")
+      .trim()
+      .toUpperCase();
+    const schemeYear = String(req.query.schemeYear || "").trim();
+    const semester = Number(req.query.semester);
+
+    if (
+      !deptCode ||
+      !/^\d{2}$/.test(schemeYear) ||
+      !Number.isInteger(semester) ||
+      semester < 1 ||
+      semester > 8
+    ) {
+      return res.status(400).json({
+        message:
+          "Department, a two-digit scheme year, and semester 1-8 are required.",
+      });
+    }
+
+    const [rows] = await db.query(
+      `SELECT id, dept_code, scheme_year, semester, subject_number, subject_code,
+              subject_name, subject_category, teaching_hours, credits
+       FROM curriculum_subjects
+       WHERE dept_code = ? AND scheme_year = ? AND semester = ?
+       ORDER BY subject_number ASC`,
+      [deptCode, schemeYear, semester],
+    );
+    res.json({ subjects: rows });
+  } catch (err) {
+    console.error("Error fetching curriculum subjects:", err);
+    res.status(500).json({
+      message: "Failed to fetch curriculum subjects",
+      error: err.message,
+    });
+  }
+};
+
+exports.createCurriculumSubject = async (req, res) => {
+  let connection;
+  try {
+    const deptCode = String(req.body.deptCode || "")
+      .trim()
+      .toUpperCase();
+    const schemeYear = String(req.body.schemeYear || "").trim();
+    const semester = Number(req.body.semester);
+    const subjectNumber = Number(req.body.subjectNumber);
+    const subjectName = String(req.body.subjectName || "").trim();
+    const subjectCategory = String(req.body.subjectCategory || "").trim();
+    const teachingHours = Number(req.body.teachingHours);
+    const credits = Number(req.body.credits);
+
+    if (
+      !deptCode ||
+      !/^\d{2}$/.test(schemeYear) ||
+      !Number.isInteger(semester) ||
+      semester < 1 ||
+      semester > 8 ||
+      !Number.isInteger(subjectNumber) ||
+      subjectNumber < 1 ||
+      subjectNumber > 9
+    ) {
+      return res.status(400).json({
+        message:
+          "Department, a two-digit scheme year, semester 1-8, and subject number 1-9 are required.",
+      });
+    }
+    if (!subjectName || subjectName.length > 200) {
+      return res.status(400).json({
+        message:
+          "Subject name is required and must be 200 characters or fewer.",
+      });
+    }
+    if (!subjectCategories.includes(subjectCategory)) {
+      return res
+        .status(400)
+        .json({ message: "Select a valid subject category." });
+    }
+    if (!Number.isInteger(teachingHours) || teachingHours < 1) {
+      return res
+        .status(400)
+        .json({ message: "Teaching hours must be a positive whole number." });
+    }
+    if (!Number.isInteger(credits) || credits < 0) {
+      return res
+        .status(400)
+        .json({ message: "Credits must be a non-negative whole number." });
+    }
+
+    const subjectCode = `${schemeYear}${deptCode}${semester}${subjectNumber}`;
+    if (subjectCode.length > 20) {
+      return res.status(400).json({
+        message: "Generated subject code exceeds the maximum length.",
+      });
+    }
+
+    connection = await db.getConnection();
+    await connection.beginTransaction();
+    await connection.query(
+      `INSERT INTO curriculum_schemes (dept_code, scheme_year)
+       VALUES (?, ?)
+       ON DUPLICATE KEY UPDATE scheme_year = VALUES(scheme_year)`,
+      [deptCode, schemeYear],
+    );
+    const [result] = await connection.query(
+      `INSERT INTO curriculum_subjects
+         (dept_code, scheme_year, semester, subject_number, subject_code,
+          subject_name, subject_category, teaching_hours, credits)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        deptCode,
+        schemeYear,
+        semester,
+        subjectNumber,
+        subjectCode,
+        subjectName,
+        subjectCategory,
+        teachingHours,
+        credits,
+      ],
+    );
+    await connection.commit();
+
+    res.status(201).json({
+      message: "Curriculum subject added successfully.",
+      subject: {
+        id: result.insertId,
+        dept_code: deptCode,
+        scheme_year: schemeYear,
+        semester,
+        subject_number: subjectNumber,
+        subject_code: subjectCode,
+        subject_name: subjectName,
+        subject_category: subjectCategory,
+        teaching_hours: teachingHours,
+        credits,
+      },
+    });
+  } catch (err) {
+    if (connection) await connection.rollback();
+    if (err.code === "ER_DUP_ENTRY") {
+      return res.status(409).json({
+        message:
+          "That subject number or generated subject code already exists for this scheme and semester.",
+      });
+    }
+    console.error("Error creating curriculum subject:", err);
+    res.status(500).json({
+      message: "Failed to add curriculum subject",
+      error: err.message,
+    });
+  } finally {
+    if (connection) connection.release();
   }
 };
 
@@ -488,18 +666,162 @@ exports.saveAllocations = async (req, res) => {
   } catch (err) {
     if (connection) await connection.rollback();
     console.error("Error saving allocations:", err);
-    res
-      .status(500)
-      .json({
-        message: "Failed to save subject allocations",
-        error: err.message,
-      });
+    res.status(500).json({
+      message: "Failed to save subject allocations",
+      error: err.message,
+    });
   } finally {
     if (connection) connection.release();
   }
 };
 
 // 6. Get Curriculum Subjects Assigned to a Specific Faculty
+// 6. List subject allotments for a department and academic year
+exports.getSubjectAllotments = async (req, res) => {
+  try {
+    const deptCode = String(req.query.dept || "")
+      .trim()
+      .toUpperCase();
+    const academicYear = String(req.query.academicYear || "").trim();
+
+    if (!deptCode || !isValidAcademicYear(academicYear)) {
+      return res.status(400).json({
+        message: "Department and academic year in YYYY-YY format are required.",
+      });
+    }
+
+    const [legacyRows] = await db.query(
+      `SELECT sa.id AS allocation_id, sa.academic_year, sa.teaching_hours,
+              sa.semester, sa.section, sa.faculty_id, NULL AS scheme_year,
+              NULL AS curriculum_subject_id,
+              COALESCE(NULLIF(CONCAT_WS(' ', NULLIF(fp.title, ''), fp.full_name), ''), sa.faculty_id) AS faculty_name,
+              fp.designation AS faculty_designation,
+              s.subject_code, s.subject_name, s.subject_type AS subject_category, s.credits
+       FROM subject_allocations sa
+       LEFT JOIN faculty_profiles fp ON sa.faculty_id = fp.faculty_id
+       JOIN subjects s ON sa.subject_code = s.subject_code
+       WHERE sa.dept_code = ? AND sa.academic_year = ?
+      `,
+      [deptCode, academicYear],
+    );
+    const [curriculumRows] = await db.query(
+      `SELECT csa.id AS allocation_id, csa.academic_year, cs.teaching_hours,
+              cs.semester, csa.section, csa.faculty_id, cs.scheme_year,
+              cs.id AS curriculum_subject_id,
+              COALESCE(NULLIF(CONCAT_WS(' ', NULLIF(fp.title, ''), fp.full_name), ''), csa.faculty_id) AS faculty_name,
+              fp.designation AS faculty_designation,
+              cs.subject_code, cs.subject_name,
+              cs.subject_category, cs.credits
+       FROM curriculum_subject_allotments csa
+       JOIN curriculum_subjects cs ON csa.curriculum_subject_id = cs.id
+       LEFT JOIN faculty_profiles fp ON csa.faculty_id = fp.faculty_id
+       WHERE csa.dept_code = ? AND csa.academic_year = ?`,
+      [deptCode, academicYear],
+    );
+    const rows = [...legacyRows, ...curriculumRows].sort(
+      (a, b) =>
+        String(a.faculty_name).localeCompare(String(b.faculty_name)) ||
+        String(a.subject_code).localeCompare(String(b.subject_code)),
+    );
+
+    res.json({ deptCode, academicYear, allotments: rows });
+  } catch (err) {
+    console.error("Error fetching subject allotments:", err);
+    res
+      .status(500)
+      .json({
+        message: "Failed to fetch subject allotments",
+        error: err.message,
+      });
+  }
+};
+
+// 7. Add or update one faculty-subject allotment
+exports.createSubjectAllotment = async (req, res) => {
+  try {
+    const deptCode = String(req.body.deptCode || req.body.dept_code || "")
+      .trim()
+      .toUpperCase();
+    const academicYear = String(
+      req.body.academicYear || req.body.academic_year || "",
+    ).trim();
+    const facultyId = String(req.body.facultyId || req.body.faculty_id || "")
+      .trim()
+      .toUpperCase();
+    const schemeYear = String(req.body.schemeYear || "").trim();
+    const semester = Number(req.body.semester);
+    const section = String(req.body.section || "").trim();
+    const curriculumSubjectId = Number(req.body.curriculumSubjectId);
+    const allocatedBy = String(
+      req.body.allocatedBy || req.body.allocated_by || `HOD_${deptCode}`,
+    ).trim();
+
+    if (
+      !deptCode ||
+      !isValidAcademicYear(academicYear) ||
+      !facultyId ||
+      !/^\d{2}$/.test(schemeYear) ||
+      !Number.isInteger(semester) ||
+      semester < 1 ||
+      semester > 8 ||
+      !Number.isInteger(curriculumSubjectId) ||
+      curriculumSubjectId < 1 ||
+      !section ||
+      section.length > 20
+    ) {
+      return res.status(400).json({
+        message:
+          "Department, academic year, faculty ID, scheme, semester, section, and curriculum subject are required.",
+      });
+    }
+
+    const faculty = await findFacultyProfile(deptCode, facultyId);
+    if (!faculty) {
+      return res
+        .status(400)
+        .json({
+          message: "The selected faculty ID is not in this department.",
+        });
+    }
+
+    const [[subject]] = await db.query(
+      `SELECT id, subject_code, semester
+       FROM curriculum_subjects
+       WHERE id = ? AND dept_code = ? AND scheme_year = ? AND semester = ?`,
+      [curriculumSubjectId, deptCode, schemeYear, semester],
+    );
+    if (!subject) {
+      return res
+        .status(400)
+        .json({
+          message:
+            "The selected subject does not match this department, scheme, or semester.",
+        });
+    }
+
+    await db.query(
+      `INSERT INTO curriculum_subject_allotments
+         (dept_code, curriculum_subject_id, faculty_id, academic_year, section, allocated_by)
+       VALUES (?, ?, ?, ?, ?, ?)
+       ON DUPLICATE KEY UPDATE
+         allocated_by = VALUES(allocated_by),
+         allocated_at = CURRENT_TIMESTAMP`,
+      [deptCode, subject.id, facultyId, academicYear, section, allocatedBy],
+    );
+
+    res.status(201).json({ message: "Subject allotment saved successfully." });
+  } catch (err) {
+    console.error("Error saving subject allotment:", err);
+    res
+      .status(500)
+      .json({
+        message: "Failed to save subject allotment",
+        error: err.message,
+      });
+  }
+};
+
+// 8. Get Subjects Assigned to a Specific Faculty
 exports.getFacultyAssignedSubjects = async (req, res) => {
   try {
     const facultyId = (req.query.faculty_id || req.params.faculty_id || "")
@@ -540,16 +862,15 @@ exports.getFacultyAssignedSubjects = async (req, res) => {
     );
 
     res.json({
-      assignedSubjects: assignedRows,
+      faculty: facultyInfo[0],
+      assignedSubjects: [...assignedRows, ...curriculumAssignedRows],
     });
   } catch (err) {
     console.error("Error fetching faculty subjects:", err);
-    res
-      .status(500)
-      .json({
-        message: "Failed to fetch assigned subjects",
-        error: err.message,
-      });
+    res.status(500).json({
+      message: "Failed to fetch assigned subjects",
+      error: err.message,
+    });
   }
 };
 
@@ -622,7 +943,7 @@ exports.getFacultySubjectRoster = async (req, res) => {
   }
 };
 
-// 7. Get Student Academic Grades & Attendance Ledger
+// 9. Get Student Academic Grades & Attendance Ledger
 exports.getStudentGrades = async (req, res) => {
   try {
     const usn = req.params.usn?.trim()?.toUpperCase();
@@ -733,12 +1054,10 @@ exports.getStudentActivities = async (req, res) => {
     });
   } catch (err) {
     console.error("Error fetching extracurricular activities:", err);
-    res
-      .status(500)
-      .json({
-        message: "Failed to fetch extracurricular activities",
-        error: err.message,
-      });
+    res.status(500).json({
+      message: "Failed to fetch extracurricular activities",
+      error: err.message,
+    });
   }
 };
 
@@ -817,12 +1136,10 @@ exports.addStudentActivity = async (req, res) => {
     });
   } catch (err) {
     console.error("Error adding extracurricular activity:", err);
-    res
-      .status(500)
-      .json({
-        message: "Failed to record extracurricular activity",
-        error: err.message,
-      });
+    res.status(500).json({
+      message: "Failed to record extracurricular activity",
+      error: err.message,
+    });
   }
 };
 
@@ -980,12 +1297,10 @@ exports.getStudentMessages = async (req, res) => {
     res.json({ usn, messages: rows });
   } catch (err) {
     console.error("Error fetching student messages:", err);
-    res
-      .status(500)
-      .json({
-        message: "Failed to fetch student notifications.",
-        error: err.message,
-      });
+    res.status(500).json({
+      message: "Failed to fetch student notifications.",
+      error: err.message,
+    });
   }
 };
 
