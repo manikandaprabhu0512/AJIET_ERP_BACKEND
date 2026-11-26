@@ -70,14 +70,14 @@ exports.registerStudent = async (req, res) => {
         user_id, usn, full_name, email, mobile_country_code, mobile, branch, section,
         enrolled_year, program_type, admission_quota, dob, gender, blood_group, religion,
         caste, category, aadhaar_number, place_of_stay, student_ssid,
-        sslc_percentage, studied_kannada_in_sslc, puc_pcm_percentage, puc_total_percentage, abc_id,
+        sslc_percentage, studied_kannada_in_sslc, puc_pcm_percentage, diploma_percentage, ug_cgpa, puc_total_percentage, abc_id,
         address_line1, city, district, state, pincode, pg_owner_name, pg_contact_country_code,
         pg_contact_number, pg_address, father_name, father_occupation, father_mobile_country_code,
         father_mobile, mother_name, mother_occupation, mother_mobile_country_code, mother_mobile,
         declaration_accepted
       ) VALUES (
+        ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
         ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-        ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
         ?,
         ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
       )`,
@@ -105,6 +105,8 @@ exports.registerStudent = async (req, res) => {
         parseFloat(data.sslcPercentage) || null,
         data.studiedKannadaInSSLC || 'Yes',
         parseFloat(data.pucPcmPercentage) || null,
+        parseFloat(data.diplomaPercentage) || null,
+        data.ugCgpa ? Number(data.ugCgpa) : null,
         parseFloat(data.pucTotalPercentage) || null,
         abcId || null,
         data.addressLine1 || '',
@@ -179,9 +181,12 @@ exports.login = async (req, res) => {
     // A. Check student users table first
     const [userRows] = await db.query(
       `SELECT u.id, u.username, u.email, u.password_hash, u.role, u.is_first_login,
-              sp.full_name, sp.branch, sp.section
+              sp.full_name AS student_full_name, sp.branch, sp.section,
+              fp.title AS faculty_title, fp.full_name AS faculty_full_name,
+              fp.department AS faculty_department, fp.designation AS faculty_designation
        FROM users u
        LEFT JOIN student_profiles sp ON u.id = sp.user_id
+       LEFT JOIN faculty_profiles fp ON u.id = fp.user_id
        WHERE UPPER(u.username) = ?
        LIMIT 1`,
       [cleanUsername]
@@ -206,9 +211,15 @@ exports.login = async (req, res) => {
           id: user.id,
           username: user.username,
           email: user.email,
-          role: user.role, // 'student'
+          role: user.role,
+          category: user.role === 'faculty' ? 'faculty' : user.role,
           isFirstLogin: requiresFirstTimeFlow,
-          name: user.full_name || user.username,
+          name: user.role === 'faculty'
+            ? `${user.faculty_title || ''} ${user.faculty_full_name || user.username}`.trim()
+            : user.student_full_name || user.username,
+          department: user.faculty_department || '',
+          deptName: user.faculty_department || '',
+          designation: user.faculty_designation || '',
           branch: user.branch || '',
           section: user.section || ''
         }

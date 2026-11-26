@@ -1,4 +1,48 @@
 const db = require('../config/db');
+const subjectCategories = ['PCC', 'IPCC', 'LAB', 'Ability Enhancement', 'Non-Credit'];
+const facultyDepartmentAliases = {
+  BSH: [
+    'Basic Science & Humanities (Physics)',
+    'Basic Science & Humanities (Chemistry)',
+    'Basic Science & Humanities (Mathematics)'
+  ],
+  MBA: ['Master of Business Administration (MBA)'],
+  MCA: ['Master of Computer Applications (MCA)']
+};
+
+const getFacultyDepartmentFilter = (deptCode) => {
+  const aliases = facultyDepartmentAliases[deptCode] || [];
+  const aliasFilter = aliases.length
+    ? ` OR UPPER(TRIM(fp.department)) IN (${aliases.map(() => '?').join(', ')})`
+    : '';
+
+  return {
+    sql: `(UPPER(TRIM(fp.department)) = UPPER(TRIM(d.dept_name))${aliasFilter})`,
+    values: aliases.map((department) => department.toUpperCase())
+  };
+};
+
+const findFacultyProfile = async (deptCode, facultyId, queryable = db) => {
+  const departmentFilter = getFacultyDepartmentFilter(deptCode);
+  const [rows] = await queryable.query(
+    `SELECT fp.faculty_id,
+            CONCAT_WS(' ', NULLIF(fp.title, ''), fp.full_name) AS name,
+            d.dept_code, fp.designation, u.email,
+            CASE WHEN UPPER(fp.designation) LIKE '%HOD%' THEN TRUE ELSE FALSE END AS is_hod
+     FROM faculty_profiles fp
+     JOIN users u ON u.id = fp.user_id AND u.role = 'faculty'
+     JOIN departments d ON d.dept_code = ?
+     WHERE fp.faculty_id = ? AND ${departmentFilter.sql}
+     LIMIT 1`,
+    [deptCode, facultyId, ...departmentFilter.values]
+  );
+  return rows[0] || null;
+};
+
+const isValidAcademicYear = (value) => {
+  const match = /^(\d{4})-(\d{2})$/.exec(value);
+  return Boolean(match && Number(match[2]) === (Number(match[1]) + 1) % 100);
+};
 
 // 1. Get Department Overview (Counts & Stats)
 exports.getDepartmentOverview = async (req, res) => {
@@ -6,9 +50,14 @@ exports.getDepartmentOverview = async (req, res) => {
     const deptCode = (req.query.dept || 'EC').toUpperCase();
 
     // Faculty count
+    const departmentFilter = getFacultyDepartmentFilter(deptCode);
     const [facultyRows] = await db.query(
-      'SELECT COUNT(*) as total_faculty FROM faculty WHERE dept_code = ?',
-      [deptCode]
+      `SELECT COUNT(*) AS total_faculty
+       FROM faculty_profiles fp
+       JOIN users u ON u.id = fp.user_id AND u.role = 'faculty'
+       JOIN departments d ON d.dept_code = ?
+       WHERE ${departmentFilter.sql}`,
+      [deptCode, ...departmentFilter.values]
     );
 
     // Subject count
@@ -19,8 +68,18 @@ exports.getDepartmentOverview = async (req, res) => {
 
     // Allocated count for current academic year
     const [allocRows] = await db.query(
-      'SELECT COUNT(DISTINCT subject_code) as allocated_subjects FROM subject_allocations WHERE dept_code = ?',
-      [deptCode]
+      `SELECT COUNT(DISTINCT subject_code) AS allocated_subjects
+       FROM (
+         SELECT subject_code
+         FROM subject_allocations
+         WHERE dept_code = ?
+         UNION ALL
+         SELECT cs.subject_code
+         FROM curriculum_subject_allotments csa
+         JOIN curriculum_subjects cs ON csa.curriculum_subject_id = cs.id
+         WHERE csa.dept_code = ?
+       ) AS allocated_subjects`,
+      [deptCode, deptCode]
     );
 
     res.json({
@@ -39,12 +98,18 @@ exports.getDepartmentOverview = async (req, res) => {
 exports.getFaculties = async (req, res) => {
   try {
     const deptCode = (req.query.dept || 'EC').toUpperCase();
+    const departmentFilter = getFacultyDepartmentFilter(deptCode);
     const [rows] = await db.query(
-      `SELECT faculty_id, name, dept_code, designation, email, is_hod, is_first_login
-       FROM faculty
-       WHERE dept_code = ?
-       ORDER BY is_hod DESC, faculty_id ASC`,
-      [deptCode]
+      `SELECT fp.faculty_id,
+              CONCAT_WS(' ', NULLIF(fp.title, ''), fp.full_name) AS name,
+              d.dept_code, fp.designation, u.email,
+              CASE WHEN UPPER(fp.designation) LIKE '%HOD%' THEN TRUE ELSE FALSE END AS is_hod
+       FROM faculty_profiles fp
+       JOIN users u ON u.id = fp.user_id AND u.role = 'faculty'
+       JOIN departments d ON d.dept_code = ?
+       WHERE ${departmentFilter.sql}
+       ORDER BY is_hod DESC, fp.faculty_id ASC`,
+      [deptCode, ...departmentFilter.values]
     );
     res.json({ faculties: rows });
   } catch (err) {
@@ -77,6 +142,136 @@ exports.getSubjects = async (req, res) => {
   }
 };
 
+exports.getCurriculumSchemes = async (req, res) => {
+  try {
+    const deptCode = String(req.query.dept || '').trim().toUpperCase();
+    if (!deptCode) {
+      return res.status(400).json({ message: 'Department code is required.' });
+    }
+
+    const [rows] = await db.query(
+      'SELECT scheme_year FROM curriculum_schemes WHERE dept_code = ? ORDER BY scheme_year DESC',
+      [deptCode]
+    );
+    res.json({ schemes: rows.map((row) => row.scheme_year) });
+  } catch (err) {
+    console.error('Error fetching curriculum schemes:', err);
+    res.status(500).json({ message: 'Failed to fetch curriculum schemes', error: err.message });
+  }
+};
+
+exports.getCurriculumSubjects = async (req, res) => {
+  try {
+    const deptCode = String(req.query.dept || '').trim().toUpperCase();
+    const schemeYear = String(req.query.schemeYear || '').trim();
+    const semester = Number(req.query.semester);
+
+    if (!deptCode || !/^\d{2}$/.test(schemeYear) ||
+        !Number.isInteger(semester) || semester < 1 || semester > 8) {
+      return res.status(400).json({
+        message: 'Department, a two-digit scheme year, and semester 1-8 are required.'
+      });
+    }
+
+    const [rows] = await db.query(
+      `SELECT id, dept_code, scheme_year, semester, subject_number, subject_code,
+              subject_name, subject_category, teaching_hours, credits
+       FROM curriculum_subjects
+       WHERE dept_code = ? AND scheme_year = ? AND semester = ?
+       ORDER BY subject_number ASC`,
+      [deptCode, schemeYear, semester]
+    );
+    res.json({ subjects: rows });
+  } catch (err) {
+    console.error('Error fetching curriculum subjects:', err);
+    res.status(500).json({ message: 'Failed to fetch curriculum subjects', error: err.message });
+  }
+};
+
+exports.createCurriculumSubject = async (req, res) => {
+  let connection;
+  try {
+    const deptCode = String(req.body.deptCode || '').trim().toUpperCase();
+    const schemeYear = String(req.body.schemeYear || '').trim();
+    const semester = Number(req.body.semester);
+    const subjectNumber = Number(req.body.subjectNumber);
+    const subjectName = String(req.body.subjectName || '').trim();
+    const subjectCategory = String(req.body.subjectCategory || '').trim();
+    const teachingHours = Number(req.body.teachingHours);
+    const credits = Number(req.body.credits);
+
+    if (!deptCode || !/^\d{2}$/.test(schemeYear) ||
+        !Number.isInteger(semester) || semester < 1 || semester > 8 ||
+        !Number.isInteger(subjectNumber) || subjectNumber < 1 || subjectNumber > 9) {
+      return res.status(400).json({
+        message: 'Department, a two-digit scheme year, semester 1-8, and subject number 1-9 are required.'
+      });
+    }
+    if (!subjectName || subjectName.length > 200) {
+      return res.status(400).json({ message: 'Subject name is required and must be 200 characters or fewer.' });
+    }
+    if (!subjectCategories.includes(subjectCategory)) {
+      return res.status(400).json({ message: 'Select a valid subject category.' });
+    }
+    if (!Number.isInteger(teachingHours) || teachingHours < 1) {
+      return res.status(400).json({ message: 'Teaching hours must be a positive whole number.' });
+    }
+    if (!Number.isInteger(credits) || credits < 0) {
+      return res.status(400).json({ message: 'Credits must be a non-negative whole number.' });
+    }
+
+    const subjectCode = `${schemeYear}${deptCode}${semester}${subjectNumber}`;
+    if (subjectCode.length > 20) {
+      return res.status(400).json({ message: 'Generated subject code exceeds the maximum length.' });
+    }
+
+    connection = await db.getConnection();
+    await connection.beginTransaction();
+    await connection.query(
+      `INSERT INTO curriculum_schemes (dept_code, scheme_year)
+       VALUES (?, ?)
+       ON DUPLICATE KEY UPDATE scheme_year = VALUES(scheme_year)`,
+      [deptCode, schemeYear]
+    );
+    const [result] = await connection.query(
+      `INSERT INTO curriculum_subjects
+         (dept_code, scheme_year, semester, subject_number, subject_code,
+          subject_name, subject_category, teaching_hours, credits)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [deptCode, schemeYear, semester, subjectNumber, subjectCode,
+        subjectName, subjectCategory, teachingHours, credits]
+    );
+    await connection.commit();
+
+    res.status(201).json({
+      message: 'Curriculum subject added successfully.',
+      subject: {
+        id: result.insertId,
+        dept_code: deptCode,
+        scheme_year: schemeYear,
+        semester,
+        subject_number: subjectNumber,
+        subject_code: subjectCode,
+        subject_name: subjectName,
+        subject_category: subjectCategory,
+        teaching_hours: teachingHours,
+        credits
+      }
+    });
+  } catch (err) {
+    if (connection) await connection.rollback();
+    if (err.code === 'ER_DUP_ENTRY') {
+      return res.status(409).json({
+        message: 'That subject number or generated subject code already exists for this scheme and semester.'
+      });
+    }
+    console.error('Error creating curriculum subject:', err);
+    res.status(500).json({ message: 'Failed to add curriculum subject', error: err.message });
+  } finally {
+    if (connection) connection.release();
+  }
+};
+
 // 4. Get Current Subject Allocations for Semester & Section
 exports.getAllocations = async (req, res) => {
   try {
@@ -88,11 +283,13 @@ exports.getAllocations = async (req, res) => {
     const [rows] = await db.query(
       `SELECT s.id as subject_id, s.subject_code, s.subject_name, s.semester, s.credits, s.subject_type,
               sa.id as allocation_id, sa.section, sa.academic_year, sa.allocated_at,
-              f.faculty_id, f.name as faculty_name, f.designation as faculty_designation
+              sa.faculty_id,
+              COALESCE(NULLIF(CONCAT_WS(' ', NULLIF(fp.title, ''), fp.full_name), ''), sa.faculty_id) AS faculty_name,
+              fp.designation AS faculty_designation
        FROM subjects s
        LEFT JOIN subject_allocations sa ON s.subject_code = sa.subject_code
             AND sa.semester = ? AND sa.section = ? AND sa.academic_year = ?
-       LEFT JOIN faculty f ON sa.faculty_id = f.faculty_id
+       LEFT JOIN faculty_profiles fp ON sa.faculty_id = fp.faculty_id
        WHERE s.dept_code = ? AND s.semester = ?
        ORDER BY s.subject_code ASC`,
       [semester, section, academicYear, deptCode, semester]
@@ -115,7 +312,7 @@ exports.getAllocations = async (req, res) => {
 exports.saveAllocations = async (req, res) => {
   let connection;
   try {
-    const dept = req.body.deptCode || req.body.dept_code || 'EC';
+    const dept = String(req.body.deptCode || req.body.dept_code || 'EC').trim().toUpperCase();
     const semester = req.body.semester;
     const section = req.body.section || 'Section A';
     const academicYear = req.body.academicYear || req.body.academic_year || '2026-27';
@@ -143,6 +340,15 @@ exports.saveAllocations = async (req, res) => {
           [dept, semester, section, subject_code, academicYear]
         );
       } else {
+        const facultyId = String(faculty_id).trim().toUpperCase();
+        const faculty = await findFacultyProfile(dept, facultyId, connection);
+        if (!faculty) {
+          await connection.rollback();
+          return res.status(400).json({
+            message: 'The selected faculty ID is not in this department.'
+          });
+        }
+
         // Upsert allocation
         await connection.query(
           `INSERT INTO subject_allocations (dept_code, semester, section, subject_code, faculty_id, academic_year, allocated_by)
@@ -151,7 +357,7 @@ exports.saveAllocations = async (req, res) => {
              faculty_id = VALUES(faculty_id),
              allocated_by = VALUES(allocated_by),
              allocated_at = CURRENT_TIMESTAMP`,
-          [dept, semester, section, subject_code, faculty_id, academicYear, allocatedBy]
+          [dept, semester, section, subject_code, facultyId, academicYear, allocatedBy]
         );
       }
     }
@@ -167,7 +373,115 @@ exports.saveAllocations = async (req, res) => {
   }
 };
 
-// 6. Get Subjects Assigned to a Specific Faculty
+// 6. List subject allotments for a department and academic year
+exports.getSubjectAllotments = async (req, res) => {
+  try {
+    const deptCode = String(req.query.dept || '').trim().toUpperCase();
+    const academicYear = String(req.query.academicYear || '').trim();
+
+    if (!deptCode || !isValidAcademicYear(academicYear)) {
+      return res.status(400).json({
+        message: 'Department and academic year in YYYY-YY format are required.'
+      });
+    }
+
+    const [legacyRows] = await db.query(
+      `SELECT sa.id AS allocation_id, sa.academic_year, sa.teaching_hours,
+              sa.semester, sa.section, sa.faculty_id, NULL AS scheme_year,
+              NULL AS curriculum_subject_id,
+              COALESCE(NULLIF(CONCAT_WS(' ', NULLIF(fp.title, ''), fp.full_name), ''), sa.faculty_id) AS faculty_name,
+              fp.designation AS faculty_designation,
+              s.subject_code, s.subject_name, s.subject_type AS subject_category, s.credits
+       FROM subject_allocations sa
+       LEFT JOIN faculty_profiles fp ON sa.faculty_id = fp.faculty_id
+       JOIN subjects s ON sa.subject_code = s.subject_code
+       WHERE sa.dept_code = ? AND sa.academic_year = ?
+      `,
+      [deptCode, academicYear]
+    );
+    const [curriculumRows] = await db.query(
+      `SELECT csa.id AS allocation_id, csa.academic_year, cs.teaching_hours,
+              cs.semester, csa.section, csa.faculty_id, cs.scheme_year,
+              cs.id AS curriculum_subject_id,
+              COALESCE(NULLIF(CONCAT_WS(' ', NULLIF(fp.title, ''), fp.full_name), ''), csa.faculty_id) AS faculty_name,
+              fp.designation AS faculty_designation,
+              cs.subject_code, cs.subject_name,
+              cs.subject_category, cs.credits
+       FROM curriculum_subject_allotments csa
+       JOIN curriculum_subjects cs ON csa.curriculum_subject_id = cs.id
+       LEFT JOIN faculty_profiles fp ON csa.faculty_id = fp.faculty_id
+       WHERE csa.dept_code = ? AND csa.academic_year = ?`,
+      [deptCode, academicYear]
+    );
+    const rows = [...legacyRows, ...curriculumRows].sort((a, b) =>
+      String(a.faculty_name).localeCompare(String(b.faculty_name)) ||
+      String(a.subject_code).localeCompare(String(b.subject_code))
+    );
+
+    res.json({ deptCode, academicYear, allotments: rows });
+  } catch (err) {
+    console.error('Error fetching subject allotments:', err);
+    res.status(500).json({ message: 'Failed to fetch subject allotments', error: err.message });
+  }
+};
+
+// 7. Add or update one faculty-subject allotment
+exports.createSubjectAllotment = async (req, res) => {
+  try {
+    const deptCode = String(req.body.deptCode || req.body.dept_code || '').trim().toUpperCase();
+    const academicYear = String(req.body.academicYear || req.body.academic_year || '').trim();
+    const facultyId = String(req.body.facultyId || req.body.faculty_id || '').trim().toUpperCase();
+    const schemeYear = String(req.body.schemeYear || '').trim();
+    const semester = Number(req.body.semester);
+    const section = String(req.body.section || '').trim();
+    const curriculumSubjectId = Number(req.body.curriculumSubjectId);
+    const allocatedBy = String(
+      req.body.allocatedBy || req.body.allocated_by || `HOD_${deptCode}`
+    ).trim();
+
+    if (!deptCode || !isValidAcademicYear(academicYear) || !facultyId ||
+        !/^\d{2}$/.test(schemeYear) ||
+        !Number.isInteger(semester) || semester < 1 || semester > 8 ||
+        !Number.isInteger(curriculumSubjectId) || curriculumSubjectId < 1 ||
+        !section || section.length > 20) {
+      return res.status(400).json({
+        message: 'Department, academic year, faculty ID, scheme, semester, section, and curriculum subject are required.'
+      });
+    }
+
+    const faculty = await findFacultyProfile(deptCode, facultyId);
+    if (!faculty) {
+      return res.status(400).json({ message: 'The selected faculty ID is not in this department.' });
+    }
+
+    const [[subject]] = await db.query(
+      `SELECT id, subject_code, semester
+       FROM curriculum_subjects
+       WHERE id = ? AND dept_code = ? AND scheme_year = ? AND semester = ?`,
+      [curriculumSubjectId, deptCode, schemeYear, semester]
+    );
+    if (!subject) {
+      return res.status(400).json({ message: 'The selected subject does not match this department, scheme, or semester.' });
+    }
+
+    await db.query(
+      `INSERT INTO curriculum_subject_allotments
+         (dept_code, curriculum_subject_id, faculty_id, academic_year, section, allocated_by)
+       VALUES (?, ?, ?, ?, ?, ?)
+       ON DUPLICATE KEY UPDATE
+         allocated_by = VALUES(allocated_by),
+         allocated_at = CURRENT_TIMESTAMP`,
+      [deptCode, subject.id, facultyId, academicYear, section, allocatedBy]
+    );
+
+    res.status(201).json({ message: 'Subject allotment saved successfully.' });
+  } catch (err) {
+    console.error('Error saving subject allotment:', err);
+    res.status(500).json({ message: 'Failed to save subject allotment', error: err.message });
+  }
+};
+
+// 8. Get Subjects Assigned to a Specific Faculty
 exports.getFacultyAssignedSubjects = async (req, res) => {
   try {
     const facultyId = (req.query.faculty_id || req.params.faculty_id || '').toUpperCase();
@@ -177,7 +491,24 @@ exports.getFacultyAssignedSubjects = async (req, res) => {
     }
 
     const [facultyInfo] = await db.query(
-      'SELECT faculty_id, name, dept_code, designation, email, is_hod FROM faculty WHERE faculty_id = ?',
+      `SELECT fp.faculty_id,
+              CONCAT_WS(' ', NULLIF(fp.title, ''), fp.full_name) AS name,
+              d.dept_code, fp.designation, u.email,
+              CASE WHEN UPPER(fp.designation) LIKE '%HOD%' THEN TRUE ELSE FALSE END AS is_hod
+       FROM faculty_profiles fp
+       JOIN users u ON u.id = fp.user_id AND u.role = 'faculty'
+       JOIN departments d ON (
+         UPPER(TRIM(fp.department)) = UPPER(TRIM(d.dept_name))
+         OR (d.dept_code = 'BSH' AND UPPER(TRIM(fp.department)) IN (
+           'BASIC SCIENCE & HUMANITIES (PHYSICS)',
+           'BASIC SCIENCE & HUMANITIES (CHEMISTRY)',
+           'BASIC SCIENCE & HUMANITIES (MATHEMATICS)'
+         ))
+         OR (d.dept_code = 'MBA' AND UPPER(TRIM(fp.department)) = 'MASTER OF BUSINESS ADMINISTRATION (MBA)')
+         OR (d.dept_code = 'MCA' AND UPPER(TRIM(fp.department)) = 'MASTER OF COMPUTER APPLICATIONS (MCA)')
+       )
+       WHERE fp.faculty_id = ?
+       LIMIT 1`,
       [facultyId]
     );
 
@@ -196,10 +527,22 @@ exports.getFacultyAssignedSubjects = async (req, res) => {
        ORDER BY sa.semester ASC, sa.section ASC, s.subject_code ASC`,
       [facultyId]
     );
+    const [curriculumAssignedRows] = await db.query(
+      `SELECT csa.id AS allocation_id, cs.semester, csa.section,
+              csa.academic_year, csa.allocated_at, cs.subject_code,
+              cs.subject_name, cs.credits, cs.subject_category AS subject_type,
+              cs.teaching_hours, cs.scheme_year, d.dept_name
+       FROM curriculum_subject_allotments csa
+       JOIN curriculum_subjects cs ON csa.curriculum_subject_id = cs.id
+       JOIN departments d ON csa.dept_code = d.dept_code
+       WHERE csa.faculty_id = ?
+       ORDER BY cs.semester ASC, csa.section ASC, cs.subject_code ASC`,
+      [facultyId]
+    );
 
     res.json({
       faculty: facultyInfo[0],
-      assignedSubjects: assignedRows
+      assignedSubjects: [...assignedRows, ...curriculumAssignedRows]
     });
   } catch (err) {
     console.error('Error fetching faculty subjects:', err);
@@ -207,7 +550,7 @@ exports.getFacultyAssignedSubjects = async (req, res) => {
   }
 };
 
-// 7. Get Student Academic Grades & Attendance Ledger
+// 9. Get Student Academic Grades & Attendance Ledger
 exports.getStudentGrades = async (req, res) => {
   try {
     const usn = req.params.usn?.trim()?.toUpperCase();
@@ -271,7 +614,7 @@ exports.getStudentGrades = async (req, res) => {
   }
 };
 
-// 8. Get Extracurricular Activities for a student + eligible semester range (Option B)
+// 10. Get Extracurricular Activities for a student + eligible semester range (Option B)
 exports.getStudentActivities = async (req, res) => {
   try {
     const usn = req.params.usn?.trim()?.toUpperCase();
@@ -314,7 +657,7 @@ exports.getStudentActivities = async (req, res) => {
   }
 };
 
-// 9. Upload / Add a new Extracurricular Activity
+// 11. Upload / Add a new Extracurricular Activity
 exports.addStudentActivity = async (req, res) => {
   try {
     const usn = req.params.usn?.trim()?.toUpperCase();
