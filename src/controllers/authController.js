@@ -70,14 +70,14 @@ exports.registerStudent = async (req, res) => {
         user_id, usn, full_name, email, mobile_country_code, mobile, branch, section,
         enrolled_year, program_type, admission_quota, dob, gender, blood_group, religion,
         caste, category, aadhaar_number, place_of_stay, student_ssid,
-        sslc_percentage, studied_kannada_in_sslc, puc_pcm_percentage, puc_total_percentage, abc_id,
+        sslc_percentage, studied_kannada_in_sslc, puc_pcm_percentage, diploma_percentage, ug_cgpa, puc_total_percentage, abc_id,
         address_line1, city, district, state, pincode, pg_owner_name, pg_contact_country_code,
         pg_contact_number, pg_address, father_name, father_occupation, father_mobile_country_code,
         father_mobile, mother_name, mother_occupation, mother_mobile_country_code, mother_mobile,
         declaration_accepted
       ) VALUES (
+        ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
         ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-        ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
         ?,
         ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
       )`,
@@ -105,6 +105,8 @@ exports.registerStudent = async (req, res) => {
         parseFloat(data.sslcPercentage) || null,
         data.studiedKannadaInSSLC || 'Yes',
         parseFloat(data.pucPcmPercentage) || null,
+        parseFloat(data.diplomaPercentage) || null,
+        data.ugCgpa ? Number(data.ugCgpa) : null,
         parseFloat(data.pucTotalPercentage) || null,
         abcId || null,
         data.addressLine1 || '',

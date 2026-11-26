@@ -44,6 +44,8 @@ CREATE TABLE IF NOT EXISTS student_profiles (
   sslc_percentage DECIMAL(5,2),
   studied_kannada_in_sslc VARCHAR(10) DEFAULT 'Yes',
   puc_pcm_percentage DECIMAL(5,2),
+  diploma_percentage DECIMAL(5,2),
+  ug_cgpa DECIMAL(4,2),
   puc_total_percentage DECIMAL(5,2),
   abc_id VARCHAR(12) DEFAULT NULL,
   address_line1 TEXT,
