@@ -18,6 +18,7 @@ exports.registerFaculty = async (req, res) => {
       : '';
     const fullName = typeof data.fullName === 'string' ? data.fullName.trim() : '';
     const department = typeof data.department === 'string' ? data.department.trim() : '';
+    const title = typeof data.title === 'string' ? data.title.trim() : '';
     const designation = typeof data.designation === 'string' ? data.designation.trim() : '';
     const password = typeof data.password === 'string' && data.password.length
       ? data.password
@@ -48,10 +49,40 @@ exports.registerFaculty = async (req, res) => {
     connection = await db.getConnection();
     await connection.beginTransaction();
 
+    const [departmentRows] = await connection.query(
+      `SELECT dept_code
+       FROM departments
+       WHERE LOWER(TRIM(dept_name)) = LOWER(TRIM(?))
+       LIMIT 1`,
+      [department]
+    );
+    if (departmentRows.length === 0) {
+      await connection.rollback();
+      return res.status(400).json({
+        message: 'This faculty department is not configured for HOD subject allotment.'
+      });
+    }
+
     const [userResult] = await connection.query(
       `INSERT INTO users (username, email, password_hash, role, is_first_login)
        VALUES (?, ?, ?, 'faculty', TRUE)`,
       [facultyId, email, passwordHash]
+    );
+
+    await connection.query(
+      `INSERT INTO faculty (
+         faculty_id, name, dept_code, designation, email, mobile,
+         password_hash, is_hod, is_first_login
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, FALSE, TRUE)`,
+      [
+        facultyId,
+        `${title} ${fullName}`.trim(),
+        departmentRows[0].dept_code,
+        designation,
+        email,
+        typeof data.mobile === 'string' ? data.mobile : '',
+        passwordHash
+      ]
     );
 
     await connection.query(
@@ -61,7 +92,7 @@ exports.registerFaculty = async (req, res) => {
       [
         userResult.insertId,
         facultyId,
-        typeof data.title === 'string' ? data.title.trim() : '',
+        title,
         fullName,
         department,
         designation,

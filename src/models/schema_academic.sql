@@ -99,3 +99,27 @@ CREATE TABLE IF NOT EXISTS subject_allocations (
   FOREIGN KEY (subject_code) REFERENCES subjects(subject_code) ON DELETE CASCADE,
   UNIQUE KEY unique_subject_faculty_year (dept_code, semester, section, subject_code, faculty_id, academic_year)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- 5. Faculty Messages / Student Notifications
+CREATE TABLE IF NOT EXISTS faculty_messages (
+  id INT AUTO_INCREMENT PRIMARY KEY,
+  faculty_id VARCHAR(50) NOT NULL,
+  faculty_name VARCHAR(150) DEFAULT '',
+  department VARCHAR(150) DEFAULT '',
+  subject VARCHAR(200) DEFAULT '',
+  body TEXT NOT NULL,
+  recipient_usn VARCHAR(20) DEFAULT NULL,
+  recipient_mode VARCHAR(20) NOT NULL DEFAULT 'all',
+  is_read BOOLEAN DEFAULT FALSE,
+  sent_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  INDEX idx_faculty_messages_faculty (faculty_id),
+  INDEX idx_faculty_messages_recipient (recipient_usn),
+  INDEX idx_faculty_messages_sent (sent_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS faculty_message_reads (
+  message_id INT NOT NULL,
+  usn VARCHAR(20) NOT NULL,
+  read_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (message_id, usn)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
