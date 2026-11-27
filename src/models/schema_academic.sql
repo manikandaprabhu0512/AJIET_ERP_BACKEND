@@ -83,6 +83,49 @@ CREATE TABLE IF NOT EXISTS curriculum_subject_allotments (
   FOREIGN KEY (curriculum_subject_id) REFERENCES curriculum_subjects(id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
+CREATE TABLE IF NOT EXISTS faculty_attendance_records (
+  id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+  faculty_id VARCHAR(50) NOT NULL,
+  usn VARCHAR(20) NOT NULL,
+  academic_year VARCHAR(20) NOT NULL,
+  semester TINYINT UNSIGNED NOT NULL,
+  section VARCHAR(30) NOT NULL,
+  subject_code VARCHAR(30) NOT NULL,
+  subject_name VARCHAR(200) NOT NULL DEFAULT '',
+  attendance_date DATE NOT NULL,
+  period TINYINT UNSIGNED NOT NULL,
+  status CHAR(1) NOT NULL,
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  UNIQUE KEY uq_faculty_attendance_session
+    (usn, academic_year, semester, section, subject_code, attendance_date, period),
+  INDEX idx_faculty_attendance_student (usn, semester, academic_year),
+  INDEX idx_faculty_attendance_subject
+    (academic_year, semester, section, subject_code, attendance_date)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS faculty_ia_marks (
+  id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+  faculty_id VARCHAR(50) NOT NULL,
+  usn VARCHAR(20) NOT NULL,
+  academic_year VARCHAR(20) NOT NULL,
+  semester TINYINT UNSIGNED NOT NULL,
+  section VARCHAR(30) NOT NULL,
+  subject_code VARCHAR(30) NOT NULL,
+  subject_name VARCHAR(200) NOT NULL DEFAULT '',
+  ia1 DECIMAL(5,2) DEFAULT NULL,
+  ia2 DECIMAL(5,2) DEFAULT NULL,
+  task1 DECIMAL(5,2) DEFAULT NULL,
+  task2 DECIMAL(5,2) DEFAULT NULL,
+  final_ia DECIMAL(5,2) DEFAULT NULL,
+  source VARCHAR(30) NOT NULL DEFAULT 'Manual Entry',
+  submitted_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  UNIQUE KEY uq_faculty_ia_student_subject
+    (usn, academic_year, semester, section, subject_code),
+  INDEX idx_faculty_ia_student (usn, semester, academic_year)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
 -- 5. Legacy Subject Allocations (HOD Mapping)
 CREATE TABLE IF NOT EXISTS subject_allocations (
   id INT AUTO_INCREMENT PRIMARY KEY,

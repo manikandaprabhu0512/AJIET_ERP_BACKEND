@@ -20,9 +20,11 @@ router.post('/subject-allotments', academicController.createSubjectAllotment);
 router.get('/faculty-subjects', verifyToken, academicController.getFacultyAssignedSubjects);
 router.get('/faculty-subjects/:faculty_id', verifyToken, academicController.getFacultyAssignedSubjects);
 router.get('/faculty-subject-roster', verifyToken, academicController.getFacultySubjectRoster);
+router.post('/faculty-attendance', verifyToken, academicController.submitFacultyAttendance);
+router.post('/faculty-ia-marks', verifyToken, academicController.submitFacultyIaMarks);
 
 // Student Academic Grades & Attendance Ledger
-router.get('/student-grades/:usn', academicController.getStudentGrades);
+router.get('/student-grades/:usn', verifyToken, academicController.getStudentGrades);
 
 // Student Extracurricular Activities (Tab 3)
 router.get('/student-activities/:usn', academicController.getStudentActivities);
