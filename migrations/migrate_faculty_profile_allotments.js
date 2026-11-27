@@ -1,4 +1,4 @@
-const pool = require('./src/config/db');
+const pool = require('../src/config/db');
 
 const allotmentTables = new Set([
   'curriculum_subject_allotments',
