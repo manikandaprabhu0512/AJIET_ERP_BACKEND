@@ -936,7 +936,7 @@ exports.getFacultySubjectRoster = async (req, res) => {
     }
 
     const [allocationRows] = await db.query(
-      `SELECT csa.id
+      `SELECT csa.id, csa.dept_code
        FROM curriculum_subject_allotments csa
        JOIN curriculum_subjects cs
          ON cs.id = csa.curriculum_subject_id
@@ -953,13 +953,22 @@ exports.getFacultySubjectRoster = async (req, res) => {
     }
 
     const [students] = await db.query(
-      `SELECT DISTINCT UPPER(sp.usn) AS usn, sp.full_name AS student_name
-       FROM student_course_enrollments sce
-       JOIN student_profiles sp ON UPPER(sp.usn) = UPPER(sce.usn)
-       WHERE UPPER(sce.subject_code) = ? AND sce.semester = ?
-         AND sce.academic_year = ? AND sp.section = ?
+      `SELECT UPPER(sp.usn) AS usn, sp.full_name AS student_name
+       FROM student_profiles sp
+       JOIN departments d ON d.dept_code = ?
+       WHERE CAST(
+               REPLACE(LOWER(TRIM(sp.current_semester)), 'semester', '')
+               AS UNSIGNED
+             ) = ?
+         AND sp.academic_year = ?
+         AND UPPER(TRIM(sp.section)) = UPPER(TRIM(?))
+         AND (
+           UPPER(TRIM(sp.branch)) = UPPER(TRIM(d.dept_name))
+           OR UPPER(TRIM(sp.branch)) = UPPER(CONCAT('B.E. in ', TRIM(d.dept_name)))
+           OR UPPER(TRIM(sp.branch)) = UPPER(CONCAT('B.E in ', TRIM(d.dept_name)))
+         )
        ORDER BY usn ASC`,
-      [subjectCode, semester, academicYear, section],
+      [allocationRows[0].dept_code, semester, academicYear, section],
     );
 
     res.json({

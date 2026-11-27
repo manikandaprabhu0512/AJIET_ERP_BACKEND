@@ -68,6 +68,7 @@ exports.registerStudent = async (req, res) => {
     await connection.query(
       `INSERT INTO student_profiles (
         user_id, usn, full_name, email, mobile_country_code, mobile, branch, section,
+        current_semester, academic_year,
         enrolled_year, program_type, admission_quota, dob, gender, blood_group, religion,
         caste, category, aadhaar_number, place_of_stay, student_ssid,
         sslc_percentage, studied_kannada_in_sslc, puc_pcm_percentage, diploma_percentage, ug_cgpa, puc_total_percentage, abc_id,
@@ -77,7 +78,7 @@ exports.registerStudent = async (req, res) => {
         declaration_accepted
       ) VALUES (
         ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-        ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+        ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
         ?,
         ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
       )`,
@@ -90,6 +91,8 @@ exports.registerStudent = async (req, res) => {
         data.mobile || '',
         data.branch || '',
         data.section || 'Section A',
+        data.currentSemester || 'Semester 1',
+        data.academicYear || '2026-27',
         data.enrolledYear || '2026',
         data.programType || 'UG',
         data.admissionQuota || 'CET',
@@ -182,6 +185,7 @@ exports.login = async (req, res) => {
     const [userRows] = await db.query(
       `SELECT u.id, u.username, u.email, u.password_hash, u.role, u.is_first_login,
               sp.full_name AS student_full_name, sp.branch, sp.section,
+              sp.current_semester, sp.academic_year,
               fp.title AS faculty_title, fp.full_name AS faculty_full_name,
               fp.department AS faculty_department, fp.designation AS faculty_designation
        FROM users u
@@ -221,7 +225,9 @@ exports.login = async (req, res) => {
           deptName: user.faculty_department || '',
           designation: user.faculty_designation || '',
           branch: user.branch || '',
-          section: user.section || ''
+          section: user.section || '',
+          currentSemester: user.current_semester || 'Semester 1',
+          academicYear: user.academic_year || '2026-27'
         }
       });
     }
