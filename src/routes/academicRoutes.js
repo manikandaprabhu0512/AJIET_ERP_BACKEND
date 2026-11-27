@@ -1,10 +1,12 @@
 const express = require('express');
 const router = express.Router();
 const academicController = require('../controllers/academicController');
+const verifyToken = require('../middleware/auth');
 
 // HOD & Department Endpoints
 router.get('/overview', academicController.getDepartmentOverview);
 router.get('/faculties', academicController.getFaculties);
+router.get('/hod/students', verifyToken, academicController.getHodStudents);
 router.get('/subjects', academicController.getSubjects);
 router.get('/curriculum-schemes', academicController.getCurriculumSchemes);
 router.get('/curriculum-subjects', academicController.getCurriculumSubjects);
@@ -15,9 +17,9 @@ router.get('/subject-allotments', academicController.getSubjectAllotments);
 router.post('/subject-allotments', academicController.createSubjectAllotment);
 
 // Faculty Specific Endpoints
-router.get('/faculty-subjects', academicController.getFacultyAssignedSubjects);
-router.get('/faculty-subjects/:faculty_id', academicController.getFacultyAssignedSubjects);
-router.get('/faculty-subject-roster', academicController.getFacultySubjectRoster);
+router.get('/faculty-subjects', verifyToken, academicController.getFacultyAssignedSubjects);
+router.get('/faculty-subjects/:faculty_id', verifyToken, academicController.getFacultyAssignedSubjects);
+router.get('/faculty-subject-roster', verifyToken, academicController.getFacultySubjectRoster);
 
 // Student Academic Grades & Attendance Ledger
 router.get('/student-grades/:usn', academicController.getStudentGrades);
