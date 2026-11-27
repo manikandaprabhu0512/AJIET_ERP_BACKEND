@@ -46,6 +46,117 @@ const getStudentBranchValues = (deptCode, deptName) => {
   ];
 };
 
+let facultyAssessmentTablesPromise;
+const ensureFacultyAssessmentTables = async () => {
+  if (!facultyAssessmentTablesPromise) {
+    facultyAssessmentTablesPromise = (async () => {
+      await db.query(`
+        CREATE TABLE IF NOT EXISTS faculty_attendance_records (
+          id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+          faculty_id VARCHAR(50) NOT NULL,
+          usn VARCHAR(20) NOT NULL,
+          academic_year VARCHAR(20) NOT NULL,
+          semester TINYINT UNSIGNED NOT NULL,
+          section VARCHAR(30) NOT NULL,
+          subject_code VARCHAR(30) NOT NULL,
+          subject_name VARCHAR(200) NOT NULL DEFAULT '',
+          attendance_date DATE NOT NULL,
+          period TINYINT UNSIGNED NOT NULL,
+          status CHAR(1) NOT NULL,
+          created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+          updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+          UNIQUE KEY uq_faculty_attendance_session
+            (usn, academic_year, semester, section, subject_code, attendance_date, period),
+          INDEX idx_faculty_attendance_student (usn, semester, academic_year),
+          INDEX idx_faculty_attendance_subject
+            (academic_year, semester, section, subject_code, attendance_date)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+      `);
+      await db.query(`
+        CREATE TABLE IF NOT EXISTS faculty_ia_marks (
+          id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+          faculty_id VARCHAR(50) NOT NULL,
+          usn VARCHAR(20) NOT NULL,
+          academic_year VARCHAR(20) NOT NULL,
+          semester TINYINT UNSIGNED NOT NULL,
+          section VARCHAR(30) NOT NULL,
+          subject_code VARCHAR(30) NOT NULL,
+          subject_name VARCHAR(200) NOT NULL DEFAULT '',
+          ia1 DECIMAL(5,2) DEFAULT NULL,
+          ia2 DECIMAL(5,2) DEFAULT NULL,
+          task1 DECIMAL(5,2) DEFAULT NULL,
+          task2 DECIMAL(5,2) DEFAULT NULL,
+          final_ia DECIMAL(5,2) DEFAULT NULL,
+          source VARCHAR(30) NOT NULL DEFAULT 'Manual Entry',
+          submitted_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+          updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+          UNIQUE KEY uq_faculty_ia_student_subject
+            (usn, academic_year, semester, section, subject_code),
+          INDEX idx_faculty_ia_student (usn, semester, academic_year)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+      `);
+    })().catch((error) => {
+      facultyAssessmentTablesPromise = null;
+      throw error;
+    });
+  }
+  await facultyAssessmentTablesPromise;
+};
+
+const getFacultySubjectAllocation = async (
+  queryable,
+  facultyId,
+  subjectCode,
+  semester,
+  section,
+  academicYear,
+) => {
+  const [rows] = await queryable.query(
+    `SELECT csa.id, csa.dept_code, d.dept_name
+     FROM curriculum_subject_allotments csa
+     JOIN curriculum_subjects cs
+       ON cs.id = csa.curriculum_subject_id
+      AND cs.dept_code = csa.dept_code
+     JOIN departments d ON d.dept_code = csa.dept_code
+     WHERE UPPER(csa.faculty_id) = ? AND UPPER(cs.subject_code) = ?
+       AND cs.semester = ? AND csa.section = ? AND csa.academic_year = ?
+     LIMIT 1`,
+    [facultyId, subjectCode, semester, section, academicYear],
+  );
+  return rows[0] || null;
+};
+
+const getRegisteredStudentsForSubject = async (
+  queryable,
+  allocation,
+  semester,
+  section,
+  academicYear,
+) => {
+  const branchValues = getStudentBranchValues(
+    allocation.dept_code,
+    allocation.dept_name,
+  );
+  const branchPlaceholders = branchValues
+    .map(() => "CONVERT(? USING utf8mb4) COLLATE utf8mb4_unicode_ci")
+    .join(", ");
+  const [students] = await queryable.query(
+    `SELECT UPPER(sp.usn) AS usn, sp.full_name AS student_name
+     FROM student_profiles sp
+     WHERE CAST(
+             REPLACE(LOWER(TRIM(sp.current_semester)), 'semester', '')
+             AS UNSIGNED
+           ) = ?
+       AND sp.academic_year = ?
+       AND UPPER(TRIM(sp.section)) = UPPER(TRIM(?))
+       AND CONVERT(UPPER(TRIM(sp.branch)) USING utf8mb4) COLLATE utf8mb4_unicode_ci
+         IN (${branchPlaceholders})
+     ORDER BY usn ASC`,
+    [semester, academicYear, section, ...branchValues],
+  );
+  return students;
+};
+
 const findFacultyProfile = async (deptCode, facultyId, queryable = db) => {
   const departmentFilter = getFacultyDepartmentFilter(deptCode);
   const [rows] = await queryable.query(
@@ -66,6 +177,15 @@ const findFacultyProfile = async (deptCode, facultyId, queryable = db) => {
 const isValidAcademicYear = (value) => {
   const match = /^(\d{4})-(\d{2})$/.exec(value);
   return Boolean(match && Number(match[2]) === (Number(match[1]) + 1) % 100);
+};
+
+const isValidDate = (value) => {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
+  const parsed = new Date(`${value}T00:00:00.000Z`);
+  return (
+    Number.isFinite(parsed.getTime()) &&
+    parsed.toISOString().slice(0, 10) === value
+  );
 };
 
 const ensureFacultyMessagesTable = async () => {
@@ -1082,60 +1202,88 @@ exports.getFacultySubjectRoster = async (req, res) => {
       return res.status(403).json({ message: "Faculty access is required." });
     }
 
+    await ensureFacultyAssessmentTables();
     const facultyId = String(req.user.username || "").trim().toUpperCase();
     const subjectCode = (req.query.subject_code || "").trim().toUpperCase();
     const semester = Number.parseInt(req.query.semester, 10);
     const section = (req.query.section || "").trim();
     const academicYear = (req.query.academic_year || "").trim();
+    const attendanceDate = String(req.query.attendance_date || "").trim();
 
     if (
       !facultyId ||
       !subjectCode ||
       !Number.isInteger(semester) ||
       !section ||
-      !academicYear
+      !academicYear ||
+      !isValidDate(attendanceDate)
     ) {
       return res.status(400).json({
         message:
-          "Subject, semester, section, and academic year are required.",
+          "Subject, semester, section, academic year, and attendance date are required.",
       });
     }
 
-    const [allocationRows] = await db.query(
-      `SELECT csa.id, csa.dept_code, d.dept_name
-       FROM curriculum_subject_allotments csa
-       JOIN curriculum_subjects cs
-         ON cs.id = csa.curriculum_subject_id
-        AND cs.dept_code = csa.dept_code
-       JOIN departments d ON d.dept_code = csa.dept_code
-       WHERE UPPER(csa.faculty_id) = ? AND UPPER(cs.subject_code) = ?
-         AND cs.semester = ? AND csa.section = ? AND csa.academic_year = ?
-       LIMIT 1`,
-      [facultyId, subjectCode, semester, section, academicYear],
+    const allocation = await getFacultySubjectAllocation(
+      db,
+      facultyId,
+      subjectCode,
+      semester,
+      section,
+      academicYear,
     );
-    if (allocationRows.length === 0) {
+    if (!allocation) {
       return res
         .status(404)
         .json({ message: "This subject is not assigned to the faculty." });
     }
 
-    const studentBranchValues = getStudentBranchValues(
-      allocationRows[0].dept_code,
-      allocationRows[0].dept_name,
+    const students = await getRegisteredStudentsForSubject(
+      db,
+      allocation,
+      semester,
+      section,
+      academicYear,
     );
-    const [students] = await db.query(
-      `SELECT UPPER(sp.usn) AS usn, sp.full_name AS student_name
-       FROM student_profiles sp
-       WHERE CAST(
-               REPLACE(LOWER(TRIM(sp.current_semester)), 'semester', '')
-               AS UNSIGNED
-             ) = ?
-         AND sp.academic_year = ?
-         AND UPPER(TRIM(sp.section)) = UPPER(TRIM(?))
-         AND UPPER(TRIM(sp.branch)) IN (${studentBranchValues.map(() => "?").join(", ")})
-       ORDER BY usn ASC`,
-      [semester, academicYear, section, ...studentBranchValues],
+    const [attendanceRows] = await db.query(
+      `SELECT UPPER(usn) AS usn,
+              COUNT(*) AS recorded_periods,
+              ROUND(
+                100 * SUM(CASE WHEN status = 'P' THEN 1 ELSE 0 END) / NULLIF(COUNT(*), 0),
+                1
+              ) AS attendance_percentage,
+              MAX(CASE WHEN attendance_date = ? AND period = 1 THEN status END) AS period_1,
+              MAX(CASE WHEN attendance_date = ? AND period = 2 THEN status END) AS period_2,
+              MAX(CASE WHEN attendance_date = ? AND period = 3 THEN status END) AS period_3,
+              MAX(CASE WHEN attendance_date = ? AND period = 4 THEN status END) AS period_4,
+              MAX(CASE WHEN attendance_date = ? AND period = 5 THEN status END) AS period_5,
+              MAX(CASE WHEN attendance_date = ? AND period = 6 THEN status END) AS period_6
+       FROM faculty_attendance_records
+       WHERE academic_year = ? AND semester = ? AND section = ? AND subject_code = ?
+       GROUP BY UPPER(usn)`,
+      [
+        attendanceDate,
+        attendanceDate,
+        attendanceDate,
+        attendanceDate,
+        attendanceDate,
+        attendanceDate,
+        academicYear,
+        semester,
+        section,
+        subjectCode,
+      ],
     );
+    const [iaRows] = await db.query(
+      `SELECT UPPER(usn) AS usn, ia1, ia2, task1, task2, final_ia
+       FROM faculty_ia_marks
+       WHERE academic_year = ? AND semester = ? AND section = ? AND subject_code = ?`,
+      [academicYear, semester, section, subjectCode],
+    );
+    const attendanceByUsn = new Map(
+      attendanceRows.map((row) => [row.usn, row]),
+    );
+    const iaByUsn = new Map(iaRows.map((row) => [row.usn, row]));
 
     res.json({
       facultyId,
@@ -1143,10 +1291,39 @@ exports.getFacultySubjectRoster = async (req, res) => {
       semester,
       section,
       academicYear,
-      students: students.map((student) => ({
-        studentId: student.usn,
-        studentName: student.student_name,
-      })),
+      attendanceDate,
+      students: students.map((student) => {
+        const attendance = attendanceByUsn.get(student.usn);
+        const marks = iaByUsn.get(student.usn);
+        return {
+          studentId: student.usn,
+          studentName: student.student_name,
+          attendanceByPeriod: attendance
+            ? [
+                attendance.period_1,
+                attendance.period_2,
+                attendance.period_3,
+                attendance.period_4,
+                attendance.period_5,
+                attendance.period_6,
+              ]
+            : [],
+          attendancePeriodCount: Number(attendance?.recorded_periods || 0),
+          attendancePercent:
+            attendance?.attendance_percentage == null
+              ? null
+              : Number(attendance.attendance_percentage),
+          iaMarks: marks
+            ? {
+                ia1: marks.ia1,
+                ia2: marks.ia2,
+                task1: marks.task1,
+                task2: marks.task2,
+                finalIa: marks.final_ia,
+              }
+            : null,
+        };
+      }),
     });
   } catch (err) {
     console.error("Error fetching faculty subject roster:", err);
@@ -1157,9 +1334,311 @@ exports.getFacultySubjectRoster = async (req, res) => {
   }
 };
 
+exports.submitFacultyAttendance = async (req, res) => {
+  let connection;
+  let transactionStarted = false;
+  try {
+    if (req.user?.role !== "faculty") {
+      return res.status(403).json({ message: "Faculty access is required." });
+    }
+
+    await ensureFacultyAssessmentTables();
+    const facultyId = String(req.user.username || "").trim().toUpperCase();
+    const subjectCode = String(req.body.subjectCode || "")
+      .trim()
+      .toUpperCase();
+    const academicYear = String(req.body.academicYear || "").trim();
+    const semester = Number(req.body.semester);
+    const section = String(req.body.section || "").trim();
+    const attendanceDate = String(req.body.attendanceDate || "").trim();
+    const period = Number(req.body.period);
+    const submittedStudents = Array.isArray(req.body.students)
+      ? req.body.students
+      : [];
+
+    if (
+      !facultyId ||
+      !subjectCode ||
+      !isValidAcademicYear(academicYear) ||
+      !Number.isInteger(semester) ||
+      semester < 1 ||
+      semester > 8 ||
+      !section ||
+      !isValidDate(attendanceDate) ||
+      !Number.isInteger(period) ||
+      period < 1 ||
+      period > 6 ||
+      submittedStudents.length === 0
+    ) {
+      return res.status(400).json({
+        message:
+          "Subject, academic year, semester, section, date, period, and attendance records are required.",
+      });
+    }
+
+    const allocation = await getFacultySubjectAllocation(
+      db,
+      facultyId,
+      subjectCode,
+      semester,
+      section,
+      academicYear,
+    );
+    if (!allocation) {
+      return res
+        .status(403)
+        .json({ message: "This subject is not assigned to the faculty." });
+    }
+
+    const eligibleStudents = await getRegisteredStudentsForSubject(
+      db,
+      allocation,
+      semester,
+      section,
+      academicYear,
+    );
+    const eligibleUsns = new Set(eligibleStudents.map((student) => student.usn));
+    const attendance = submittedStudents.map((student) => ({
+      usn: String(student.studentId || student.usn || "")
+        .trim()
+        .toUpperCase(),
+      status: String(student.status || "").trim().toUpperCase(),
+    }));
+    const submittedUsns = new Set();
+    for (const student of attendance) {
+      if (
+        !student.usn ||
+        !eligibleUsns.has(student.usn) ||
+        !["P", "A"].includes(student.status) ||
+        submittedUsns.has(student.usn)
+      ) {
+        return res.status(400).json({
+          message:
+            "Attendance must contain unique USNs from the assigned class with a Present (P) or Absent (A) status.",
+        });
+      }
+      submittedUsns.add(student.usn);
+    }
+
+    connection = await db.getConnection();
+    await connection.beginTransaction();
+    transactionStarted = true;
+    const placeholders = attendance
+      .map(() => "(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+      .join(", ");
+    const values = attendance.flatMap((student) => [
+      facultyId,
+      student.usn,
+      academicYear,
+      semester,
+      section,
+      subjectCode,
+      String(req.body.subjectName || "").trim(),
+      attendanceDate,
+      period,
+      student.status,
+    ]);
+    await connection.query(
+      `INSERT INTO faculty_attendance_records
+         (faculty_id, usn, academic_year, semester, section, subject_code,
+          subject_name, attendance_date, period, status)
+       VALUES ${placeholders}
+       ON DUPLICATE KEY UPDATE
+         faculty_id = VALUES(faculty_id),
+         subject_name = VALUES(subject_name),
+         status = VALUES(status),
+         updated_at = CURRENT_TIMESTAMP`,
+      values,
+    );
+    await connection.commit();
+    transactionStarted = false;
+
+    res.status(201).json({
+      message: "Attendance saved successfully.",
+      attendanceDate,
+      period,
+      studentCount: attendance.length,
+    });
+  } catch (err) {
+    if (connection && transactionStarted) await connection.rollback();
+    console.error("Error submitting faculty attendance:", err);
+    res.status(500).json({
+      message: "Failed to save attendance.",
+      error: err.message,
+    });
+  } finally {
+    if (connection) connection.release();
+  }
+};
+
+exports.submitFacultyIaMarks = async (req, res) => {
+  let connection;
+  let transactionStarted = false;
+  try {
+    if (req.user?.role !== "faculty") {
+      return res.status(403).json({ message: "Faculty access is required." });
+    }
+
+    await ensureFacultyAssessmentTables();
+    const facultyId = String(req.user.username || "").trim().toUpperCase();
+    const subjectCode = String(req.body.subjectCode || "")
+      .trim()
+      .toUpperCase();
+    const academicYear = String(req.body.academicYear || "").trim();
+    const semester = Number(req.body.semester);
+    const section = String(req.body.section || "").trim();
+    const source =
+      req.body.source === "Excel Upload" ? "Excel Upload" : "Manual Entry";
+    const fields = [
+      ["ia1", "ia1", 25],
+      ["ia2", "ia2", 25],
+      ["task1", "task1", 10],
+      ["task2", "task2", 10],
+      ["finalIa", "final_ia", 25],
+    ];
+    const submittedMarks = Array.isArray(req.body.marks) ? req.body.marks : [];
+
+    if (
+      !facultyId ||
+      !subjectCode ||
+      !isValidAcademicYear(academicYear) ||
+      !Number.isInteger(semester) ||
+      semester < 1 ||
+      semester > 8 ||
+      !section ||
+      submittedMarks.length === 0
+    ) {
+      return res.status(400).json({
+        message:
+          "Subject, academic year, semester, section, and student marks are required.",
+      });
+    }
+
+    const allocation = await getFacultySubjectAllocation(
+      db,
+      facultyId,
+      subjectCode,
+      semester,
+      section,
+      academicYear,
+    );
+    if (!allocation) {
+      return res
+        .status(403)
+        .json({ message: "This subject is not assigned to the faculty." });
+    }
+
+    const eligibleStudents = await getRegisteredStudentsForSubject(
+      db,
+      allocation,
+      semester,
+      section,
+      academicYear,
+    );
+    const eligibleUsns = new Set(eligibleStudents.map((student) => student.usn));
+    const seenUsns = new Set();
+    let hasAnyMark = false;
+    const marks = [];
+
+    for (const record of submittedMarks) {
+      const usn = String(record.studentId || record.usn || "")
+        .trim()
+        .toUpperCase();
+      if (!usn || !eligibleUsns.has(usn) || seenUsns.has(usn)) {
+        return res.status(400).json({
+          message:
+            "Marks must contain unique USNs from the assigned class.",
+        });
+      }
+      seenUsns.add(usn);
+
+      const normalized = { usn };
+      for (const [inputField, databaseField, maximum] of fields) {
+        const rawValue = record[inputField];
+        if (rawValue === "" || rawValue === null || rawValue === undefined) {
+          normalized[databaseField] = null;
+          continue;
+        }
+        const value = Number(rawValue);
+        if (!Number.isFinite(value) || value < 0 || value > maximum) {
+          return res.status(400).json({
+            message: `${inputField} must be between 0 and ${maximum}.`,
+          });
+        }
+        normalized[databaseField] = value;
+        hasAnyMark = true;
+      }
+      marks.push(normalized);
+    }
+
+    if (!hasAnyMark) {
+      return res.status(400).json({
+        message: "Enter at least one IA mark before submitting.",
+      });
+    }
+
+    connection = await db.getConnection();
+    await connection.beginTransaction();
+    transactionStarted = true;
+    const placeholders = marks
+      .map(() => "(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+      .join(", ");
+    const values = marks.flatMap((record) => [
+      facultyId,
+      record.usn,
+      academicYear,
+      semester,
+      section,
+      subjectCode,
+      String(req.body.subjectName || "").trim(),
+      record.ia1,
+      record.ia2,
+      record.task1,
+      record.task2,
+      record.final_ia,
+      source,
+    ]);
+    await connection.query(
+      `INSERT INTO faculty_ia_marks
+         (faculty_id, usn, academic_year, semester, section, subject_code,
+          subject_name, ia1, ia2, task1, task2, final_ia, source)
+       VALUES ${placeholders}
+       ON DUPLICATE KEY UPDATE
+         faculty_id = VALUES(faculty_id),
+         subject_name = VALUES(subject_name),
+         ia1 = VALUES(ia1),
+         ia2 = VALUES(ia2),
+         task1 = VALUES(task1),
+         task2 = VALUES(task2),
+         final_ia = VALUES(final_ia),
+         source = VALUES(source),
+         submitted_at = CURRENT_TIMESTAMP,
+         updated_at = CURRENT_TIMESTAMP`,
+      values,
+    );
+    await connection.commit();
+    transactionStarted = false;
+
+    res.status(201).json({
+      message: "IA marks saved successfully.",
+      studentCount: marks.length,
+    });
+  } catch (err) {
+    if (connection && transactionStarted) await connection.rollback();
+    console.error("Error submitting faculty IA marks:", err);
+    res.status(500).json({
+      message: "Failed to save IA marks.",
+      error: err.message,
+    });
+  } finally {
+    if (connection) connection.release();
+  }
+};
+
 // 9. Get Student Academic Grades & Attendance Ledger
 exports.getStudentGrades = async (req, res) => {
   try {
+    await ensureFacultyAssessmentTables();
     const usn = req.params.usn?.trim()?.toUpperCase();
     const semester = req.query.semester
       ? parseInt(req.query.semester, 10)
@@ -1168,11 +1647,27 @@ exports.getStudentGrades = async (req, res) => {
     if (!usn) {
       return res.status(400).json({ message: "USN is required." });
     }
+    if (
+      req.user?.role !== "student" ||
+      String(req.user.username || "").trim().toUpperCase() !== usn
+    ) {
+      return res.status(403).json({
+        message: "Students can only view their own academic records.",
+      });
+    }
 
     // Get available semesters for this student
     const [semRows] = await db.query(
-      "SELECT DISTINCT semester FROM student_academic_records WHERE UPPER(usn) = ? ORDER BY semester ASC",
-      [usn],
+      `SELECT semester
+       FROM (
+         SELECT semester FROM student_academic_records WHERE UPPER(usn) = ?
+         UNION
+         SELECT semester FROM faculty_attendance_records WHERE UPPER(usn) = ?
+         UNION
+         SELECT semester FROM faculty_ia_marks WHERE UPPER(usn) = ?
+       ) AS available_semesters
+       ORDER BY semester ASC`,
+      [usn, usn, usn],
     );
 
     const availableSemesters = semRows.map((r) => r.semester);
@@ -1189,6 +1684,79 @@ exports.getStudentGrades = async (req, res) => {
     query += " ORDER BY semester ASC, subject_code ASC";
 
     const [rows] = await db.query(query, params);
+    const semesterFilter = semester ? " AND semester = ?" : "";
+    const assessmentParams = semester ? [usn, semester] : [usn];
+    const [attendanceRows] = await db.query(
+      `SELECT academic_year, semester, section, subject_code, subject_name,
+              COUNT(*) AS period_count,
+              SUM(CASE WHEN status = 'P' THEN 1 ELSE 0 END) AS attended_period_count,
+              ROUND(
+                100 * SUM(CASE WHEN status = 'P' THEN 1 ELSE 0 END) / NULLIF(COUNT(*), 0),
+                1
+              ) AS attendance_percentage
+       FROM faculty_attendance_records
+       WHERE UPPER(usn) = ?${semesterFilter}
+       GROUP BY academic_year, semester, section, subject_code, subject_name
+       ORDER BY semester ASC, subject_code ASC`,
+      assessmentParams,
+    );
+    const [iaRows] = await db.query(
+      `SELECT academic_year, semester, section, subject_code, subject_name,
+              ia1, ia2, task1, task2, final_ia, source, submitted_at
+       FROM faculty_ia_marks
+       WHERE UPPER(usn) = ?${semesterFilter}
+       ORDER BY semester ASC, subject_code ASC`,
+      assessmentParams,
+    );
+
+    const assessmentMap = new Map();
+    const getAssessmentKey = (record) =>
+      `${record.academic_year}|${record.semester}|${record.section}|${record.subject_code}`;
+    attendanceRows.forEach((record) => {
+      assessmentMap.set(getAssessmentKey(record), {
+        academicYear: record.academic_year,
+        semester: Number(record.semester),
+        section: record.section,
+        subjectCode: record.subject_code,
+        subjectName: record.subject_name,
+        periodCount: Number(record.period_count),
+        attendedPeriodCount: Number(record.attended_period_count),
+        attendancePercentage: Number(record.attendance_percentage),
+        ia1: null,
+        ia2: null,
+        task1: null,
+        task2: null,
+        finalIa: null,
+        source: null,
+        submittedAt: null,
+      });
+    });
+    iaRows.forEach((record) => {
+      const key = getAssessmentKey(record);
+      const assessment = assessmentMap.get(key) || {
+        academicYear: record.academic_year,
+        semester: Number(record.semester),
+        section: record.section,
+        subjectCode: record.subject_code,
+        subjectName: record.subject_name,
+        periodCount: 0,
+        attendedPeriodCount: 0,
+        attendancePercentage: null,
+      };
+      assessment.ia1 = record.ia1;
+      assessment.ia2 = record.ia2;
+      assessment.task1 = record.task1;
+      assessment.task2 = record.task2;
+      assessment.finalIa = record.final_ia;
+      assessment.source = record.source;
+      assessment.submittedAt = record.submitted_at;
+      assessmentMap.set(key, assessment);
+    });
+    const facultyAssessments = [...assessmentMap.values()].sort(
+      (a, b) =>
+        a.subjectCode.localeCompare(b.subjectCode) ||
+        a.academicYear.localeCompare(b.academicYear),
+    );
 
     // Compute summary statistics if records exist
     let totalCredits = 0;
@@ -1205,6 +1773,18 @@ exports.getStudentGrades = async (req, res) => {
       totalCredits > 0 ? (totalCreditPoints / totalCredits).toFixed(2) : "0.00";
     const avgAttendance =
       rows.length > 0 ? (attendanceSum / rows.length).toFixed(1) : "0.0";
+    const facultyAttendanceRecords = facultyAssessments.filter(
+      (record) => record.periodCount > 0,
+    );
+    const facultyAttendanceAverage =
+      facultyAttendanceRecords.length > 0
+        ? (
+            facultyAttendanceRecords.reduce(
+              (sum, record) => sum + record.attendancePercentage,
+              0,
+            ) / facultyAttendanceRecords.length
+          ).toFixed(1)
+        : avgAttendance;
 
     res.json({
       usn,
@@ -1213,11 +1793,12 @@ exports.getStudentGrades = async (req, res) => {
         semester ||
         (availableSemesters.length > 0 ? availableSemesters[0] : null),
       records: rows,
+      facultyAssessments,
       summary: {
         totalCredits,
         totalCreditPoints,
         sgpa: parseFloat(sgpa),
-        avgAttendance: parseFloat(avgAttendance),
+        avgAttendance: parseFloat(facultyAttendanceAverage),
         totalSubjects: rows.length,
       },
     });
