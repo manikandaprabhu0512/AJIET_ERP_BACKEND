@@ -103,6 +103,83 @@ const ensureFacultyAssessmentTables = async () => {
   await facultyAssessmentTablesPromise;
 };
 
+const getFacultyAssessments = async (usn, semester = null) => {
+  const semesterFilter = semester ? " AND semester = ?" : "";
+  const assessmentParams = semester ? [usn, semester] : [usn];
+  const [attendanceRows] = await db.query(
+    `SELECT academic_year, semester, section, subject_code, subject_name,
+            COUNT(*) AS period_count,
+            SUM(CASE WHEN status = 'P' THEN 1 ELSE 0 END) AS attended_period_count,
+            ROUND(
+              100 * SUM(CASE WHEN status = 'P' THEN 1 ELSE 0 END) / NULLIF(COUNT(*), 0),
+              1
+            ) AS attendance_percentage
+     FROM faculty_attendance_records
+     WHERE UPPER(usn) = ?${semesterFilter}
+     GROUP BY academic_year, semester, section, subject_code, subject_name
+     ORDER BY semester ASC, subject_code ASC`,
+    assessmentParams,
+  );
+  const [iaRows] = await db.query(
+    `SELECT academic_year, semester, section, subject_code, subject_name,
+            ia1, ia2, task1, task2, final_ia, source, submitted_at
+     FROM faculty_ia_marks
+     WHERE UPPER(usn) = ?${semesterFilter}
+     ORDER BY semester ASC, subject_code ASC`,
+    assessmentParams,
+  );
+
+  const assessmentMap = new Map();
+  const getAssessmentKey = (record) =>
+    `${record.academic_year}|${record.semester}|${record.section}|${record.subject_code}`;
+  attendanceRows.forEach((record) => {
+    assessmentMap.set(getAssessmentKey(record), {
+      academicYear: record.academic_year,
+      semester: Number(record.semester),
+      section: record.section,
+      subjectCode: record.subject_code,
+      subjectName: record.subject_name,
+      periodCount: Number(record.period_count),
+      attendedPeriodCount: Number(record.attended_period_count),
+      attendancePercentage: Number(record.attendance_percentage),
+      ia1: null,
+      ia2: null,
+      task1: null,
+      task2: null,
+      finalIa: null,
+      source: null,
+      submittedAt: null,
+    });
+  });
+  iaRows.forEach((record) => {
+    const key = getAssessmentKey(record);
+    const assessment = assessmentMap.get(key) || {
+      academicYear: record.academic_year,
+      semester: Number(record.semester),
+      section: record.section,
+      subjectCode: record.subject_code,
+      subjectName: record.subject_name,
+      periodCount: 0,
+      attendedPeriodCount: 0,
+      attendancePercentage: null,
+    };
+    assessment.ia1 = record.ia1;
+    assessment.ia2 = record.ia2;
+    assessment.task1 = record.task1;
+    assessment.task2 = record.task2;
+    assessment.finalIa = record.final_ia;
+    assessment.source = record.source;
+    assessment.submittedAt = record.submitted_at;
+    assessmentMap.set(key, assessment);
+  });
+
+  return [...assessmentMap.values()].sort(
+    (a, b) =>
+      a.subjectCode.localeCompare(b.subjectCode) ||
+      a.academicYear.localeCompare(b.academicYear),
+  );
+};
+
 const getFacultySubjectAllocation = async (
   queryable,
   facultyId,
@@ -1635,6 +1712,68 @@ exports.submitFacultyIaMarks = async (req, res) => {
   }
 };
 
+exports.getHodStudentAssessmentReport = async (req, res) => {
+  try {
+    if (req.user?.role !== "hod") {
+      return res.status(403).json({ message: "HOD access is required." });
+    }
+
+    const hodId = String(req.user.id || "").trim().toUpperCase();
+    const [[hod]] = await db.query(
+      `SELECT f.dept_code, d.dept_name
+       FROM faculty f
+       JOIN departments d ON d.dept_code = f.dept_code
+       WHERE UPPER(f.faculty_id) = ? AND f.is_hod = TRUE
+       LIMIT 1`,
+      [hodId],
+    );
+    if (!hod) {
+      return res.status(403).json({
+        message: "The signed-in HOD department could not be verified.",
+      });
+    }
+
+    const usn = String(req.params.usn || "")
+      .trim()
+      .toUpperCase();
+    if (!usn || usn.length > 20) {
+      return res.status(400).json({ message: "A valid student USN is required." });
+    }
+
+    const branchValues = getStudentBranchValues(
+      hod.dept_code,
+      hod.dept_name,
+    );
+    const [[student]] = await db.query(
+      `SELECT sp.usn
+       FROM student_profiles sp
+       WHERE UPPER(TRIM(sp.usn)) = ?
+         AND UPPER(TRIM(sp.branch)) IN (${branchValues.map(() => "?").join(", ")})
+       LIMIT 1`,
+      [usn, ...branchValues],
+    );
+    if (!student) {
+      return res.status(404).json({
+        message: "Student not found in your HOD department.",
+      });
+    }
+
+    await ensureFacultyAssessmentTables();
+    const facultyAssessments = await getFacultyAssessments(usn);
+    const availableSemesters = [
+      ...new Set(facultyAssessments.map((assessment) => assessment.semester)),
+    ].sort((a, b) => a - b);
+
+    return res.json({ usn, availableSemesters, facultyAssessments });
+  } catch (err) {
+    console.error("Error fetching HOD student assessment report:", err);
+    return res.status(500).json({
+      message: "Failed to fetch the student's attendance and IA report.",
+      error: err.message,
+    });
+  }
+};
+
 // 9. Get Student Academic Grades & Attendance Ledger
 exports.getStudentGrades = async (req, res) => {
   try {
@@ -1684,79 +1823,7 @@ exports.getStudentGrades = async (req, res) => {
     query += " ORDER BY semester ASC, subject_code ASC";
 
     const [rows] = await db.query(query, params);
-    const semesterFilter = semester ? " AND semester = ?" : "";
-    const assessmentParams = semester ? [usn, semester] : [usn];
-    const [attendanceRows] = await db.query(
-      `SELECT academic_year, semester, section, subject_code, subject_name,
-              COUNT(*) AS period_count,
-              SUM(CASE WHEN status = 'P' THEN 1 ELSE 0 END) AS attended_period_count,
-              ROUND(
-                100 * SUM(CASE WHEN status = 'P' THEN 1 ELSE 0 END) / NULLIF(COUNT(*), 0),
-                1
-              ) AS attendance_percentage
-       FROM faculty_attendance_records
-       WHERE UPPER(usn) = ?${semesterFilter}
-       GROUP BY academic_year, semester, section, subject_code, subject_name
-       ORDER BY semester ASC, subject_code ASC`,
-      assessmentParams,
-    );
-    const [iaRows] = await db.query(
-      `SELECT academic_year, semester, section, subject_code, subject_name,
-              ia1, ia2, task1, task2, final_ia, source, submitted_at
-       FROM faculty_ia_marks
-       WHERE UPPER(usn) = ?${semesterFilter}
-       ORDER BY semester ASC, subject_code ASC`,
-      assessmentParams,
-    );
-
-    const assessmentMap = new Map();
-    const getAssessmentKey = (record) =>
-      `${record.academic_year}|${record.semester}|${record.section}|${record.subject_code}`;
-    attendanceRows.forEach((record) => {
-      assessmentMap.set(getAssessmentKey(record), {
-        academicYear: record.academic_year,
-        semester: Number(record.semester),
-        section: record.section,
-        subjectCode: record.subject_code,
-        subjectName: record.subject_name,
-        periodCount: Number(record.period_count),
-        attendedPeriodCount: Number(record.attended_period_count),
-        attendancePercentage: Number(record.attendance_percentage),
-        ia1: null,
-        ia2: null,
-        task1: null,
-        task2: null,
-        finalIa: null,
-        source: null,
-        submittedAt: null,
-      });
-    });
-    iaRows.forEach((record) => {
-      const key = getAssessmentKey(record);
-      const assessment = assessmentMap.get(key) || {
-        academicYear: record.academic_year,
-        semester: Number(record.semester),
-        section: record.section,
-        subjectCode: record.subject_code,
-        subjectName: record.subject_name,
-        periodCount: 0,
-        attendedPeriodCount: 0,
-        attendancePercentage: null,
-      };
-      assessment.ia1 = record.ia1;
-      assessment.ia2 = record.ia2;
-      assessment.task1 = record.task1;
-      assessment.task2 = record.task2;
-      assessment.finalIa = record.final_ia;
-      assessment.source = record.source;
-      assessment.submittedAt = record.submitted_at;
-      assessmentMap.set(key, assessment);
-    });
-    const facultyAssessments = [...assessmentMap.values()].sort(
-      (a, b) =>
-        a.subjectCode.localeCompare(b.subjectCode) ||
-        a.academicYear.localeCompare(b.academicYear),
-    );
+    const facultyAssessments = await getFacultyAssessments(usn, semester);
 
     // Compute summary statistics if records exist
     let totalCredits = 0;

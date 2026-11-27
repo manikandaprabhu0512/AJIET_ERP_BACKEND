@@ -7,6 +7,7 @@ const verifyToken = require('../middleware/auth');
 router.get('/overview', academicController.getDepartmentOverview);
 router.get('/faculties', academicController.getFaculties);
 router.get('/hod/students', verifyToken, academicController.getHodStudents);
+router.get('/hod/students/:usn/assessment-report', verifyToken, academicController.getHodStudentAssessmentReport);
 router.get('/subjects', academicController.getSubjects);
 router.get('/curriculum-schemes', academicController.getCurriculumSchemes);
 router.get('/curriculum-subjects', academicController.getCurriculumSubjects);
