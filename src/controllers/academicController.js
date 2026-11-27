@@ -6,6 +6,7 @@ const subjectCategories = [
   "Ability Enhancement",
   "Non-Credit",
 ];
+const studentPageSizes = [10, 25, 50, 100];
 const facultyDepartmentAliases = {
   BSH: [
     "Basic Science & Humanities (Physics)",
@@ -26,6 +27,23 @@ const getFacultyDepartmentFilter = (deptCode) => {
     sql: `(UPPER(TRIM(fp.department)) = UPPER(TRIM(d.dept_name))${aliasFilter})`,
     values: aliases.map((department) => department.toUpperCase()),
   };
+};
+
+const getStudentBranchValues = (deptCode, deptName) => {
+  const departmentNames = [
+    deptName,
+    ...(facultyDepartmentAliases[deptCode] || []),
+  ];
+
+  return [
+    ...new Set(
+      departmentNames.flatMap((name) => [
+        name,
+        `B.E. in ${name}`,
+        `B.E in ${name}`,
+      ]).map((name) => name.trim().toUpperCase()),
+    ),
+  ];
 };
 
 const findFacultyProfile = async (deptCode, facultyId, queryable = db) => {
@@ -154,6 +172,150 @@ exports.getFaculties = async (req, res) => {
     res
       .status(500)
       .json({ message: "Failed to fetch faculties", error: err.message });
+  }
+};
+
+exports.getHodStudents = async (req, res) => {
+  try {
+    if (req.user?.role !== 'hod') {
+      return res.status(403).json({ message: 'HOD access is required.' });
+    }
+
+    const hodId = String(req.user.id || '').trim().toUpperCase();
+    const [[hod]] = await db.query(
+      `SELECT f.dept_code, d.dept_name
+       FROM faculty f
+       JOIN departments d ON d.dept_code = f.dept_code
+       WHERE UPPER(f.faculty_id) = ? AND f.is_hod = TRUE
+       LIMIT 1`,
+      [hodId]
+    );
+    if (!hod) {
+      return res.status(403).json({ message: 'The signed-in HOD department could not be verified.' });
+    }
+
+    const enrolledYear = String(req.query.enrolledYear || '').trim();
+    if (enrolledYear && !/^\d{4}$/.test(enrolledYear)) {
+      return res.status(400).json({ message: 'Enrolled year must be a four-digit year.' });
+    }
+
+    const requestedPage = Number(req.query.page || 1);
+    const pageSize = Number(req.query.perPage || 10);
+    if (!Number.isInteger(requestedPage) || requestedPage < 1) {
+      return res.status(400).json({ message: 'Page must be a positive integer.' });
+    }
+    if (!studentPageSizes.includes(pageSize)) {
+      return res.status(400).json({ message: 'Page size must be 10, 25, 50, or 100.' });
+    }
+
+    const semester = String(req.query.semester || '').trim();
+    const section = String(req.query.section || '').trim();
+    const usnSearch = String(req.query.usn || '').trim().toUpperCase();
+    if (semester.length > 30 || section.length > 30 || usnSearch.length > 20) {
+      return res.status(400).json({ message: 'A student list filter exceeds its allowed length.' });
+    }
+
+    const branchValues = getStudentBranchValues(hod.dept_code, hod.dept_name);
+    const branchFilter = `UPPER(TRIM(sp.branch)) IN (${branchValues.map(() => '?').join(', ')})`;
+    const [yearRows] = await db.query(
+      `SELECT DISTINCT sp.enrolled_year
+       FROM student_profiles sp
+       WHERE ${branchFilter}
+         AND sp.enrolled_year IS NOT NULL
+         AND TRIM(sp.enrolled_year) <> ''
+       ORDER BY CAST(sp.enrolled_year AS UNSIGNED) DESC`,
+      branchValues
+    );
+
+    let students = [];
+    let total = 0;
+    let totalPages = 0;
+    let semesters = [];
+    let sections = [];
+    if (enrolledYear) {
+      const cohortParams = [...branchValues, enrolledYear];
+      const [cohortRows] = await db.query(
+        `SELECT DISTINCT sp.current_semester, sp.section
+         FROM student_profiles sp
+         WHERE ${branchFilter} AND sp.enrolled_year = ?`,
+        cohortParams
+      );
+      semesters = [...new Set(cohortRows.map((row) => row.current_semester).filter(Boolean))]
+        .sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
+      sections = [...new Set(cohortRows.map((row) => row.section).filter(Boolean))]
+        .sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
+
+      const studentConditions = [`${branchFilter}`, 'sp.enrolled_year = ?'];
+      const studentParams = [...cohortParams];
+      if (semester) {
+        studentConditions.push('sp.current_semester = ?');
+        studentParams.push(semester);
+      }
+      if (section) {
+        studentConditions.push('sp.section = ?');
+        studentParams.push(section);
+      }
+      if (usnSearch) {
+        studentConditions.push('UPPER(sp.usn) LIKE ?');
+        studentParams.push(`%${usnSearch}%`);
+      }
+      const studentWhere = studentConditions.join(' AND ');
+
+      const [[countRow]] = await db.query(
+        `SELECT COUNT(*) AS total
+         FROM student_profiles sp
+         WHERE ${studentWhere}`,
+        studentParams
+      );
+      total = countRow.total;
+      totalPages = Math.ceil(total / pageSize);
+      const page = totalPages ? Math.min(requestedPage, totalPages) : 1;
+      const offset = (page - 1) * pageSize;
+
+      const [studentRows] = await db.query(
+        `SELECT sp.usn, sp.full_name, sp.email, sp.mobile_country_code, sp.mobile,
+                sp.branch, sp.section, sp.current_semester, sp.academic_year,
+                sp.enrolled_year, sp.program_type, sp.admission_quota, sp.dob,
+                sp.gender, sp.blood_group, sp.religion, sp.caste, sp.category,
+                sp.aadhaar_number, sp.place_of_stay, sp.student_ssid,
+                sp.sslc_percentage, sp.studied_kannada_in_sslc, sp.puc_pcm_percentage,
+                sp.diploma_percentage, sp.ug_cgpa, sp.puc_total_percentage, sp.abc_id,
+                sp.address_line1, sp.city, sp.district, sp.state, sp.pincode,
+                sp.pg_owner_name, sp.pg_contact_country_code, sp.pg_contact_number,
+                sp.pg_address, sp.father_name, sp.father_occupation,
+                sp.father_mobile_country_code, sp.father_mobile, sp.mother_name,
+                sp.mother_occupation, sp.mother_mobile_country_code, sp.mother_mobile,
+                sp.declaration_accepted
+         FROM student_profiles sp
+         WHERE ${studentWhere}
+         ORDER BY sp.usn ASC
+         LIMIT ? OFFSET ?`,
+        [...studentParams, pageSize, offset]
+      );
+      students = studentRows;
+
+      res.json({
+        department: { deptCode: hod.dept_code, deptName: hod.dept_name },
+        enrolledYears: yearRows.map((row) => row.enrolled_year),
+        semesters,
+        sections,
+        students,
+        pagination: { page, perPage: pageSize, total, totalPages },
+      });
+      return;
+    }
+
+    res.json({
+      department: { deptCode: hod.dept_code, deptName: hod.dept_name },
+      enrolledYears: yearRows.map((row) => row.enrolled_year),
+      semesters,
+      sections,
+      students,
+      pagination: { page: 1, perPage: pageSize, total, totalPages },
+    });
+  } catch (err) {
+    console.error('Error fetching HOD student list:', err);
+    res.status(500).json({ message: 'Failed to fetch department students.', error: err.message });
   }
 };
 
@@ -803,20 +965,20 @@ exports.createSubjectAllotment = async (req, res) => {
   }
 };
 
-// 8. Get Subjects Assigned to a Specific Faculty
-
 // Get Subjects Assigned to a Specific Faculty
 exports.getFacultyAssignedSubjects = async (req, res) => {
   try {
-    const facultyId = String(
-      req.query.faculty_id || req.params.faculty_id || "",
-    )
+    if (req.user?.role !== "faculty") {
+      return res.status(403).json({ message: "Faculty access is required." });
+    }
+
+    const facultyId = String(req.user.username || "")
       .trim()
       .toUpperCase();
 
     if (!facultyId) {
       return res.status(400).json({
-        message: "Faculty ID is required.",
+        message: "Faculty identity is missing from the authenticated account.",
       });
     }
 
@@ -916,7 +1078,11 @@ exports.getFacultyAssignedSubjects = async (req, res) => {
 // 7. Fetch the enrolled students for one faculty subject allocation
 exports.getFacultySubjectRoster = async (req, res) => {
   try {
-    const facultyId = (req.query.faculty_id || "").trim().toUpperCase();
+    if (req.user?.role !== "faculty") {
+      return res.status(403).json({ message: "Faculty access is required." });
+    }
+
+    const facultyId = String(req.user.username || "").trim().toUpperCase();
     const subjectCode = (req.query.subject_code || "").trim().toUpperCase();
     const semester = Number.parseInt(req.query.semester, 10);
     const section = (req.query.section || "").trim();
@@ -931,16 +1097,17 @@ exports.getFacultySubjectRoster = async (req, res) => {
     ) {
       return res.status(400).json({
         message:
-          "Faculty, subject, semester, section, and academic year are required.",
+          "Subject, semester, section, and academic year are required.",
       });
     }
 
     const [allocationRows] = await db.query(
-      `SELECT csa.id, csa.dept_code
+      `SELECT csa.id, csa.dept_code, d.dept_name
        FROM curriculum_subject_allotments csa
        JOIN curriculum_subjects cs
          ON cs.id = csa.curriculum_subject_id
         AND cs.dept_code = csa.dept_code
+       JOIN departments d ON d.dept_code = csa.dept_code
        WHERE UPPER(csa.faculty_id) = ? AND UPPER(cs.subject_code) = ?
          AND cs.semester = ? AND csa.section = ? AND csa.academic_year = ?
        LIMIT 1`,
@@ -952,23 +1119,22 @@ exports.getFacultySubjectRoster = async (req, res) => {
         .json({ message: "This subject is not assigned to the faculty." });
     }
 
+    const studentBranchValues = getStudentBranchValues(
+      allocationRows[0].dept_code,
+      allocationRows[0].dept_name,
+    );
     const [students] = await db.query(
       `SELECT UPPER(sp.usn) AS usn, sp.full_name AS student_name
        FROM student_profiles sp
-       JOIN departments d ON d.dept_code = ?
        WHERE CAST(
                REPLACE(LOWER(TRIM(sp.current_semester)), 'semester', '')
                AS UNSIGNED
              ) = ?
          AND sp.academic_year = ?
          AND UPPER(TRIM(sp.section)) = UPPER(TRIM(?))
-         AND (
-           UPPER(TRIM(sp.branch)) = UPPER(TRIM(d.dept_name))
-           OR UPPER(TRIM(sp.branch)) = UPPER(CONCAT('B.E. in ', TRIM(d.dept_name)))
-           OR UPPER(TRIM(sp.branch)) = UPPER(CONCAT('B.E in ', TRIM(d.dept_name)))
-         )
+         AND UPPER(TRIM(sp.branch)) IN (${studentBranchValues.map(() => "?").join(", ")})
        ORDER BY usn ASC`,
-      [allocationRows[0].dept_code, semester, academicYear, section],
+      [semester, academicYear, section, ...studentBranchValues],
     );
 
     res.json({
