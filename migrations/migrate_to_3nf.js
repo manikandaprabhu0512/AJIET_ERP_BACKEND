@@ -1,4 +1,4 @@
-const db = require('./src/config/db');
+const db = require('../src/config/db');
 
 async function migrateTo3NF() {
   console.log('=== Step 1: Upsert Subjects into subjects Master Table ===');

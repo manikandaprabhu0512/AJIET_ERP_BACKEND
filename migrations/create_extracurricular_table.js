@@ -1,4 +1,4 @@
-const db = require('./src/config/db');
+const db = require('../src/config/db');
 
 async function setupExtracurricular() {
   console.log('--- Setting up student_extracurricular_activities table ---');

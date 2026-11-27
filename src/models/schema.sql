@@ -29,6 +29,8 @@ CREATE TABLE IF NOT EXISTS student_profiles (
   mobile VARCHAR(20) NOT NULL,
   branch VARCHAR(100) NOT NULL,
   section VARCHAR(20) DEFAULT 'Section A',
+  current_semester VARCHAR(20) DEFAULT 'Semester 1',
+  academic_year VARCHAR(20) DEFAULT '2026-27',
   enrolled_year VARCHAR(10) DEFAULT '2026',
   program_type VARCHAR(20) DEFAULT 'UG',
   admission_quota VARCHAR(50) DEFAULT 'CET',
