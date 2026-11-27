@@ -381,12 +381,10 @@ exports.getCurriculumSchemes = async (req, res) => {
     res.json({ schemes: rows.map((row) => row.scheme_year) });
   } catch (err) {
     console.error("Error fetching curriculum schemes:", err);
-    res
-      .status(500)
-      .json({
-        message: "Failed to fetch curriculum schemes",
-        error: err.message,
-      });
+    res.status(500).json({
+      message: "Failed to fetch curriculum schemes",
+      error: err.message,
+    });
   }
 };
 
@@ -422,12 +420,10 @@ exports.getCurriculumSubjects = async (req, res) => {
     res.json({ subjects: rows });
   } catch (err) {
     console.error("Error fetching curriculum subjects:", err);
-    res
-      .status(500)
-      .json({
-        message: "Failed to fetch curriculum subjects",
-        error: err.message,
-      });
+    res.status(500).json({
+      message: "Failed to fetch curriculum subjects",
+      error: err.message,
+    });
   }
 };
 
@@ -461,12 +457,10 @@ exports.createCurriculumSubject = async (req, res) => {
       });
     }
     if (!subjectName || subjectName.length > 200) {
-      return res
-        .status(400)
-        .json({
-          message:
-            "Subject name is required and must be 200 characters or fewer.",
-        });
+      return res.status(400).json({
+        message:
+          "Subject name is required and must be 200 characters or fewer.",
+      });
     }
     if (!subjectCategories.includes(subjectCategory)) {
       return res
@@ -486,11 +480,9 @@ exports.createCurriculumSubject = async (req, res) => {
 
     const subjectCode = `${schemeYear}${deptCode}${semester}${subjectNumber}`;
     if (subjectCode.length > 20) {
-      return res
-        .status(400)
-        .json({
-          message: "Generated subject code exceeds the maximum length.",
-        });
+      return res.status(400).json({
+        message: "Generated subject code exceeds the maximum length.",
+      });
     }
 
     connection = await db.getConnection();
@@ -544,12 +536,10 @@ exports.createCurriculumSubject = async (req, res) => {
       });
     }
     console.error("Error creating curriculum subject:", err);
-    res
-      .status(500)
-      .json({
-        message: "Failed to add curriculum subject",
-        error: err.message,
-      });
+    res.status(500).json({
+      message: "Failed to add curriculum subject",
+      error: err.message,
+    });
   } finally {
     if (connection) connection.release();
   }
@@ -727,12 +717,10 @@ exports.getSubjectAllotments = async (req, res) => {
     res.json({ deptCode, academicYear, allotments: rows });
   } catch (err) {
     console.error("Error fetching subject allotments:", err);
-    res
-      .status(500)
-      .json({
-        message: "Failed to fetch subject allotments",
-        error: err.message,
-      });
+    res.status(500).json({
+      message: "Failed to fetch subject allotments",
+      error: err.message,
+    });
   }
 };
 
@@ -777,11 +765,9 @@ exports.createSubjectAllotment = async (req, res) => {
 
     const faculty = await findFacultyProfile(deptCode, facultyId);
     if (!faculty) {
-      return res
-        .status(400)
-        .json({
-          message: "The selected faculty ID is not in this department.",
-        });
+      return res.status(400).json({
+        message: "The selected faculty ID is not in this department.",
+      });
     }
 
     const [[subject]] = await db.query(
@@ -791,12 +777,10 @@ exports.createSubjectAllotment = async (req, res) => {
       [curriculumSubjectId, deptCode, schemeYear, semester],
     );
     if (!subject) {
-      return res
-        .status(400)
-        .json({
-          message:
-            "The selected subject does not match this department, scheme, or semester.",
-        });
+      return res.status(400).json({
+        message:
+          "The selected subject does not match this department, scheme, or semester.",
+      });
     }
 
     await db.query(
@@ -812,62 +796,117 @@ exports.createSubjectAllotment = async (req, res) => {
     res.status(201).json({ message: "Subject allotment saved successfully." });
   } catch (err) {
     console.error("Error saving subject allotment:", err);
-    res
-      .status(500)
-      .json({
-        message: "Failed to save subject allotment",
-        error: err.message,
-      });
+    res.status(500).json({
+      message: "Failed to save subject allotment",
+      error: err.message,
+    });
   }
 };
 
 // 8. Get Subjects Assigned to a Specific Faculty
+
+// Get Subjects Assigned to a Specific Faculty
 exports.getFacultyAssignedSubjects = async (req, res) => {
   try {
-    const facultyId = (req.query.faculty_id || req.params.faculty_id || "")
+    const facultyId = String(
+      req.query.faculty_id || req.params.faculty_id || "",
+    )
       .trim()
       .toUpperCase();
 
     if (!facultyId) {
-      return res.status(400).json({ message: "Faculty ID is required." });
+      return res.status(400).json({
+        message: "Faculty ID is required.",
+      });
     }
 
+    // Fetch faculty profile information
+    const [facultyInfo] = await db.query(
+      `SELECT
+          fp.faculty_id,
+          CONCAT_WS(' ', NULLIF(fp.title, ''), fp.full_name) AS name,
+          d.dept_code,
+          fp.designation,
+          u.email,
+          CASE
+            WHEN UPPER(fp.designation) LIKE '%HOD%' THEN TRUE
+            ELSE FALSE
+          END AS is_hod
+       FROM faculty_profiles fp
+       JOIN users u
+         ON u.id = fp.user_id
+        AND u.role = 'faculty'
+       JOIN departments d ON (
+         UPPER(TRIM(fp.department)) = UPPER(TRIM(d.dept_name))
+         OR (
+           d.dept_code = 'BSH'
+           AND UPPER(TRIM(fp.department)) IN (
+             'BASIC SCIENCE & HUMANITIES (PHYSICS)',
+             'BASIC SCIENCE & HUMANITIES (CHEMISTRY)',
+             'BASIC SCIENCE & HUMANITIES (MATHEMATICS)'
+           )
+         )
+         OR (
+           d.dept_code = 'MBA'
+           AND UPPER(TRIM(fp.department)) =
+             'MASTER OF BUSINESS ADMINISTRATION (MBA)'
+         )
+         OR (
+           d.dept_code = 'MCA'
+           AND UPPER(TRIM(fp.department)) =
+             'MASTER OF COMPUTER APPLICATIONS (MCA)'
+         )
+       )
+       WHERE fp.faculty_id = ?
+       LIMIT 1`,
+      [facultyId],
+    );
+
+    if (facultyInfo.length === 0) {
+      return res.status(404).json({
+        message: "Faculty not found.",
+      });
+    }
+
+    // Fetch curriculum subjects assigned to faculty
     const [assignedRows] = await db.query(
-      `SELECT csa.id AS allocation_id, cs.semester, csa.section,
-              csa.academic_year, csa.allocated_at, csa.dept_code,
-              cs.scheme_year, cs.subject_code, cs.subject_name,
-              cs.credits, cs.subject_category, cs.teaching_hours,
-              d.dept_name
+      `SELECT
+          csa.id AS allocation_id,
+          cs.semester,
+          csa.section,
+          csa.academic_year,
+          csa.allocated_at,
+          csa.dept_code,
+          cs.scheme_year,
+          cs.subject_code,
+          cs.subject_name,
+          cs.credits,
+          cs.subject_category AS subject_type,
+          cs.teaching_hours,
+          d.dept_name
        FROM curriculum_subject_allotments csa
        JOIN curriculum_subjects cs
          ON cs.id = csa.curriculum_subject_id
         AND cs.dept_code = csa.dept_code
-       LEFT JOIN departments d ON d.dept_code = csa.dept_code
+       JOIN departments d
+         ON d.dept_code = csa.dept_code
        WHERE UPPER(csa.faculty_id) = ?
-       ORDER BY csa.academic_year DESC, cs.semester ASC,
-                csa.section ASC, cs.subject_code ASC`,
-      [facultyId],
-    );
-    const [curriculumAssignedRows] = await db.query(
-      `SELECT csa.id AS allocation_id, cs.semester, csa.section,
-              csa.academic_year, csa.allocated_at, cs.subject_code,
-              cs.subject_name, cs.credits, cs.subject_category AS subject_type,
-              cs.teaching_hours, cs.scheme_year, d.dept_name
-       FROM curriculum_subject_allotments csa
-       JOIN curriculum_subjects cs ON csa.curriculum_subject_id = cs.id
-       JOIN departments d ON csa.dept_code = d.dept_code
-       WHERE csa.faculty_id = ?
-       ORDER BY cs.semester ASC, csa.section ASC, cs.subject_code ASC`,
+       ORDER BY
+          csa.academic_year DESC,
+          cs.semester ASC,
+          csa.section ASC,
+          cs.subject_code ASC`,
       [facultyId],
     );
 
-    res.json({
+    return res.json({
       faculty: facultyInfo[0],
-      assignedSubjects: [...assignedRows, ...curriculumAssignedRows],
+      assignedSubjects: assignedRows,
     });
   } catch (err) {
     console.error("Error fetching faculty subjects:", err);
-    res.status(500).json({
+
+    return res.status(500).json({
       message: "Failed to fetch assigned subjects",
       error: err.message,
     });
